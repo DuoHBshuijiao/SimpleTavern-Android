@@ -6,6 +6,7 @@ local.properties
 .idea/
 .cxx/
 captures/
+build_log.txt
 *.apk
 *.aab
 *.ap_

@@ -1,6 +1,6 @@
 # SimpleTavern Android
 
-Android 业务核心仓库。当前只有从桌面仓库迁入的任务基线和行为参考，还没有 Gradle 工程，也没有可构建产物。
+Android 业务核心仓库。已建立 Kotlin 多模块业务核心与 DEBUG 宿主；界面仍留给 Codex。构建需本机 Android SDK。
 
 界面留给后续 Codex。本仓库先做可构建、可调用、可持久化的 Kotlin 业务底座。
 
