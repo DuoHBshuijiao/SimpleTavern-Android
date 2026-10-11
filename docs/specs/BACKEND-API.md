@@ -6,7 +6,7 @@
 
 应用形态：本机单用户。前端默认 `http://127.0.0.1:9081`，后端默认 `http://127.0.0.1:9091`。浏览器请求走 `/api/*`，由前端开发服务器代理到后端。无登录鉴权；OAuth 仅用于向上游 LLM 厂商取 token。CORS 默认只放行本机 Origin（9081 / 9181 等），`allow_credentials=False`。局域网请设 `SIMPLETAVERN_CORS_ORIGINS` 与 `SIMPLETAVERN_BIND`。发布脚本默认绑 `127.0.0.1`。
 
-并行沙箱：`python sandbox.py` 使用 `http://127.0.0.1:9181` / `http://127.0.0.1:9191` 与目录 `data-sandbox/`（环境变量 `SIMPLETAVERN_DATA_DIR`）。不改写生产 `data/`，也不占用生产端口。用法见 [`docs/SANDBOX.md`](../SANDBOX.md)。
+并行沙箱：`python sandbox.py` 使用 `http://127.0.0.1:9181` / `http://127.0.0.1:9191` 与目录 `data-sandbox/`（环境变量 `SIMPLETAVERN_DATA_DIR`）。不改写生产 `data/`，也不占用生产端口。用法见桌面仓库的 `docs/SANDBOX.md`（Android 仓库不包含该桌面说明）。
 
 持久化：JSON 文件位于仓库 `data/`（设置、角色、会话、世界书、头像、字体、背景、TTS 缓存、OAuth token、用量账本 `usage/`、用户价格覆盖 `pricing_rules.json`、迁移警告 `migration_warnings.jsonl` 等）。沙箱写入 `data-sandbox/`。
 

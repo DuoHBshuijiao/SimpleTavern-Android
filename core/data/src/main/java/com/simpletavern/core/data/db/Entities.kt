@@ -315,3 +315,10 @@ data class SourceBlobEntity(
     val contentJson: String,
     val importedAt: String,
 )
+
+@Entity(tableName = "content_regex_records", indices = [Index("chatId", "queueStatus", "orderIndex")])
+data class ContentRegexRecordEntity(
+    @PrimaryKey val messageId: String, val chatId: String, val nodeId: String, val orderIndex: Long,
+    val revision: Long, val sourceText: String, val rulesJson: String, val outputJson: String,
+    val queueStatus: String, val consumedByTaskId: String?, val updatedAt: String,
+)

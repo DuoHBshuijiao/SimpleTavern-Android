@@ -33,5 +33,8 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("androidx.sqlite:sqlite:2.4.0")
+    implementation("com.google.re2j:re2j:1.8")
+    implementation("org.yaml:snakeyaml:2.3")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
 }

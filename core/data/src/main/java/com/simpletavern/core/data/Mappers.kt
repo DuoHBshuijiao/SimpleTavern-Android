@@ -2,8 +2,21 @@ package com.simpletavern.core.data
 
 import com.simpletavern.core.data.db.*
 import com.simpletavern.core.model.*
+import kotlinx.serialization.json.*
 
 object Mappers {
+    /** Old imports retained this known source control in extraJson before it became a typed field. */
+    fun normalizeOverrides(raw: JsonObject): JsonObject {
+        val fields = raw.toMutableMap()
+        val source = (raw["extraJson"] as? JsonPrimitive)?.contentOrNull?.let { Jsonx.decodeOrNull<JsonObject>(it) }
+        val role = (source?.get("knowledgeGraphBeforeLastRole") as? JsonPrimitive)?.contentOrNull
+            ?.takeIf { it in setOf("assistant", "system", "user") } ?: "assistant"
+        fields.putIfAbsent("knowledgeGraphBeforeLastRole", JsonPrimitive(role))
+        fields.putIfAbsent("sessionSystemPromptEnabled", JsonPrimitive(true))
+        fields.putIfAbsent("worldBookSelectionMode", JsonPrimitive("merge"))
+        return JsonObject(fields)
+    }
+
     fun toDomain(e: ChatEntity): ChatSession = ChatSession(
         id = e.id,
         characterId = e.characterId,
@@ -15,7 +28,7 @@ object Mappers {
         groupDelayMs = e.groupDelayMs,
         groupSystemInjectDepth = e.groupSystemInjectDepth,
         groupSystemAlwaysAtBottom = e.groupSystemAlwaysAtBottom,
-        overrides = Jsonx.decode(e.overridesJson),
+        overrides = Jsonx.decode(normalizeOverrides(Jsonx.json.parseToJsonElement(e.overridesJson).jsonObject).toString()),
         sandboxId = e.sandboxId,
         forkedFromChatId = e.forkedFromChatId,
         forkedFromMessageId = e.forkedFromMessageId,

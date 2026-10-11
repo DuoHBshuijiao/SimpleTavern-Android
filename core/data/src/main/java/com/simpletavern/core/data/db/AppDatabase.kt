@@ -33,8 +33,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SandboxEntity::class,
         UsageEventEntity::class,
         SourceBlobEntity::class,
+        ContentRegexRecordEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -53,6 +54,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun fileChanges(): FileChangeDao
     abstract fun sandboxes(): SandboxDao
     abstract fun usage(): UsageDao
+    abstract fun contentRegex(): ContentRegexDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -74,7 +76,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        val ALL_MIGRATIONS: Array<Migration> = emptyArray()
+        val ALL_MIGRATIONS: Array<Migration> = arrayOf(object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE IF NOT EXISTS content_regex_records (
+                    messageId TEXT NOT NULL PRIMARY KEY, chatId TEXT NOT NULL, nodeId TEXT NOT NULL,
+                    orderIndex INTEGER NOT NULL, revision INTEGER NOT NULL, sourceText TEXT NOT NULL,
+                    rulesJson TEXT NOT NULL, outputJson TEXT NOT NULL, queueStatus TEXT NOT NULL,
+                    consumedByTaskId TEXT, updatedAt TEXT NOT NULL)""".trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_content_regex_records_chatId_queueStatus_orderIndex ON content_regex_records (chatId, queueStatus, orderIndex)")
+            }
+        })
     }
 }
 

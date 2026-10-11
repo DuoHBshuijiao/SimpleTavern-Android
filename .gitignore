@@ -9,6 +9,12 @@ local.properties
 tools/_build.bat
 captures/
 build_log.txt
+build_release_log.txt
+*.log
+*.tmp
+*.bak
+*.orig
+*~
 *.apk
 *.aab
 *.ap_

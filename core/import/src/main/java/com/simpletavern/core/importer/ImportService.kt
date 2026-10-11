@@ -1,31 +1,24 @@
 package com.simpletavern.core.importer
 
-import android.database.sqlite.SQLiteDatabase
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import com.simpletavern.core.data.*
-import com.simpletavern.core.data.db.AttachmentEntity
 import com.simpletavern.core.data.db.ImportBatchEntity
 import com.simpletavern.core.model.*
-import java.io.BufferedInputStream
 import java.io.File
-import java.io.FileOutputStream
 import java.time.Instant
 import java.util.UUID
 import java.util.zip.ZipFile
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.*
 
-data class ImportProgress(val batchId: String, val phase: String, val detail: String, val fraction: Float)
+data class ImportProgress(val batchId: String, val phase: String, val detail: String, val fraction: Float,
+    val files: Int = 0, val bytes: Long = 0)
+data class PreflightResult(val source: String, val entries: List<String>, val notes: List<String> = emptyList())
 
 class ImportService(
     private val paths: StoragePaths,
@@ -34,538 +27,291 @@ class ImportService(
     private val memory: MemoryStore,
     private val importStore: ImportStore,
     private val attachments: AttachmentStore,
+    private val dataGate: DataOperationGate? = null,
 ) {
     private val progress = MutableStateFlow(ImportProgress("", "idle", "", 0f))
+    private val importMutex = Mutex()
+    @Volatile private var cancelRequested = false
+
     fun observeProgress(): Flow<ImportProgress> = progress.asStateFlow()
-
-    private var cancelRequested = false
-
     fun requestCancel() { cancelRequested = true }
+
+    suspend fun getReport(batchId: String): ImportReport? =
+        importStore.getBatch(batchId)?.reportJson?.let { Jsonx.decode<ImportReport>(it) }
+    suspend fun hasBatch(batchId: String): Boolean = importStore.batchStatus(batchId) != null
+
+    suspend fun sourceRevisions(namespace: String) = importStore.sourceBlobs(namespace)
+    suspend fun sourceNamespaces() = importStore.sourceNamespaces()
+
+    suspend fun onProcessStart() = withContext(Dispatchers.IO) { importMutex.withLock { recoverInterrupted() } }
+
+    private suspend fun recoverInterrupted() {
+        importStore.incomplete().forEach { batch ->
+            val report = ImportReport(batch.id, batch.source,
+                listOf(ImportReportItem("batch", null, null, "interrupted", "process ended before batch commit; not resumed")), false)
+            importStore.upsertBatch(batch.copy(status = "interrupted", reportJson = Jsonx.encode(report), updatedAt = nowIso()))
+            if (batch.id.matches(Regex("[a-f0-9]{32}"))) {
+                cleanupOwned(paths.attachments.resolve("imports/${batch.id}"), paths.attachments.resolve("imports"))
+                cleanupOwned(paths.importStaging.resolve(batch.id), paths.importStaging)
+            }
+        }
+        // A done batch can be killed during cleanup; never remove its committed attachment directory.
+        val stages = paths.importStaging.listFiles() ?: throw StError.Validation("import staging unavailable")
+        stages.forEach { stage ->
+            if (!stage.name.matches(Regex("[a-f0-9]{32}"))) throw StError.Validation("unknown import staging identity")
+            val status = importStore.batchStatus(stage.name) ?: throw StError.Validation("import staging has no owning batch")
+            if (status != "done")
+                cleanupOwned(paths.attachments.resolve("imports/${stage.name}"), paths.attachments.resolve("imports"))
+            cleanupOwned(stage, paths.importStaging)
+        }
+    }
 
     suspend fun preflight(zipFile: File): PreflightResult = withContext(Dispatchers.IO) {
         ZipFile(zipFile).use { zip ->
-            val names = zip.entries().asSequence().map { it.name }.toSet()
-            when {
-                names.any { it == "rikka_hub.db" || it.endsWith("/rikka_hub.db") } ||
-                    names.contains("settings.json") && names.any { it.contains("rikka_hub") } ->
-                    PreflightResult("rikka_hub", names.toList(), notes = listOf("Detected RikkaHub-style backup"))
-                names.any { it.startsWith("chats/") || it == "settings.json" || it.startsWith("characters/") } ->
-                    PreflightResult("desktop", names.toList(), notes = listOf("Detected SimpleTavern desktop backup/snapshot"))
-                else ->
-                    PreflightResult("unknown", names.toList(), notes = listOf("Unrecognized archive layout"))
+            val entries = mutableListOf<String>()
+            val enumeration = zip.entries()
+            var settingsEntry: java.util.zip.ZipEntry? = null
+            var hasNativeMarker = false
+            while (enumeration.hasMoreElements()) {
+                currentCoroutineContext().ensureActive()
+                if (entries.size >= 200_000) throw StError.Validation("source archive exceeds 200000 entries")
+                val entry = enumeration.nextElement()
+                entries += entry.name
+                if (settingsEntry == null && (entry.name == "settings.json" || entry.name.endsWith("/settings.json")))
+                    settingsEntry = entry
+                if (entry.name.substringAfterLast('/') == "BACKUP_META.json") hasNativeMarker = true
             }
-        }
-    }
-
-    suspend fun execute(zipFile: File, sourceHint: String? = null): ImportReport = withContext(Dispatchers.IO) {
-        cancelRequested = false
-        val batchId = newId()
-        val now = nowIso()
-        importStore.upsertBatch(ImportBatchEntity(batchId, sourceHint ?: "auto", "running", null, now, now))
-        val staging = paths.importStaging.resolve(batchId).also { it.mkdirs() }
-        val items = mutableListOf<ImportReportItem>()
-        try {
-            unzipSafe(zipFile, staging)
-            progress.value = ImportProgress(batchId, "unzipped", staging.absolutePath, 0.2f)
-            checkCancelled()
-            val detected = sourceHint ?: detectSource(staging)
-            val report = when (detected) {
-                "rikka_hub" -> importRikkaHub(batchId, staging, items)
-                "desktop" -> importDesktop(batchId, staging, items)
-                else -> {
-                    items += ImportReportItem("archive", null, null, "failed", "unsupported archive")
-                    ImportReport(batchId, detected, items, success = false)
+            if (hasNativeMarker)
+                return@withContext PreflightResult("native", entries, listOf("use the native backup preflight/restore contract, not source import"))
+            val settings = settingsEntry?.let { entry ->
+                zip.getInputStream(entry).use { input ->
+                    val text = NativeJsonInput.read(input, 32_000_000)
+                    currentCoroutineContext().ensureActive()
+                    val parsed = Jsonx.json.parseToJsonElement(text)
+                    parsed as? JsonObject ?: throw StError.Validation("settings.json root is not an object")
                 }
             }
-            importStore.upsertBatch(
-                ImportBatchEntity(batchId, detected, if (report.success) "done" else "failed", Jsonx.encode(report), now, nowIso()),
-            )
-            report
-        } catch (c: CancelledImport) {
-            val report = ImportReport(batchId, sourceHint ?: "auto", items, success = false, cancelled = true)
-            importStore.upsertBatch(ImportBatchEntity(batchId, report.source, "cancelled", Jsonx.encode(report), now, nowIso()))
-            report
-        } catch (t: Throwable) {
-            items += ImportReportItem("batch", null, null, "failed", t.message)
-            val report = ImportReport(batchId, sourceHint ?: "auto", items, success = false)
-            importStore.upsertBatch(ImportBatchEntity(batchId, report.source, "failed", Jsonx.encode(report), now, nowIso()))
-            report
+            val source = detect(entries, settings)
+            PreflightResult(source, entries, listOf("source=$source; existing library will be merged"))
         }
     }
 
-    private fun detectSource(staging: File): String {
-        if (staging.resolve("rikka_hub.db").exists() || staging.walkTopDown().any { it.name == "rikka_hub.db" }) return "rikka_hub"
-        if (staging.resolve("settings.json").exists() || staging.resolve("chats").isDirectory) return "desktop"
-        return "unknown"
-    }
-
-    private suspend fun importDesktop(batchId: String, staging: File, items: MutableList<ImportReportItem>): ImportReport {
-        val ns = "desktop:$batchId"
-        progress.value = ImportProgress(batchId, "desktop", "settings", 0.3f)
-        val settings = staging.resolve("settings.json")
-        if (settings.exists()) {
-            content.saveSettingsJson(settings.readText(), nowIso())
-            items += ImportReportItem("settings", "settings.json", "global", "converted", null)
-        } else {
-            items += ImportReportItem("settings", null, null, "missing", "settings.json not in package")
-        }
-
-        importJsonDir(staging.resolve("characters"), ns, "character", items) { id, obj ->
-            val card = CharacterCard(
-                id = mapId(ns, id, "character"),
-                name = obj.str("name") ?: "角色",
-                description = obj.str("description") ?: "",
-                personality = obj.str("personality") ?: "",
-                scenario = obj.str("scenario") ?: "",
-                firstMessage = obj.str("firstMessage") ?: "",
-                exampleDialogue = obj.str("exampleDialogue") ?: "",
-                systemPrompt = obj.str("systemPrompt") ?: "",
-                avatarRelativePath = null,
-                attachedWorldBookIds = obj.strList("attachedWorldBookIds"),
-                mvuEnabled = obj.bool("mvuEnabled") ?: false,
-                mvuMode = obj.str("mvuMode") ?: "regex",
-                mvuDirective = obj.str("mvuDirective"),
-                initialStateTablesJson = obj["initialStateTables"]?.toString(),
-                contentRegexRulesJson = obj["contentRegexRules"]?.toString(),
-                createdAt = obj.str("createdAt") ?: nowIso(),
-                updatedAt = obj.str("updatedAt") ?: nowIso(),
-                sourceNamespace = ns,
-                sourceId = id,
-                extraJson = obj.toString(),
-            )
-            content.saveCharacter(card)
-            card.id
-        }
-
-        // personas may be in settings or personas/
-        importJsonDir(staging.resolve("personas"), ns, "persona", items) { id, obj ->
-            val p = UserPersona(
-                id = mapId(ns, id, "persona"),
-                name = obj.str("name") ?: "Persona",
-                description = obj.str("description") ?: "",
-                createdAt = obj.str("createdAt") ?: nowIso(),
-                updatedAt = obj.str("updatedAt") ?: nowIso(),
-                sourceNamespace = ns,
-                sourceId = id,
-                extraJson = obj.toString(),
-            )
-            content.savePersona(p)
-            p.id
-        }
-
-        importJsonDir(staging.resolve("world_books").takeIf { it.exists() }
-            ?: staging.resolve("worldbooks"), ns, "worldbook", items) { id, obj ->
-            val entries = (obj["entries"] as? JsonArray)?.mapNotNull { el ->
-                val e = el as? JsonObject ?: return@mapNotNull null
-                WorldBookEntry(
-                    id = e.str("id") ?: newId(),
-                    title = e.str("title") ?: "",
-                    regex = e.str("regex") ?: "",
-                    content = e.str("content") ?: "",
-                    enabled = e.bool("enabled") ?: true,
-                    orderIndex = e.int("orderIndex") ?: 0,
-                )
-            } ?: emptyList()
-            val book = WorldBook(
-                id = mapId(ns, id, "worldbook"),
-                name = obj.str("name") ?: "世界书",
-                entries = entries,
-                globalActive = obj.bool("globalActive") ?: false,
-                sessionChatIds = obj.strList("sessionChatIds"),
-                createdAt = obj.str("createdAt") ?: nowIso(),
-                updatedAt = obj.str("updatedAt") ?: nowIso(),
-                sourceNamespace = ns,
-                sourceId = id,
-                extraJson = obj.toString(),
-            )
-            content.saveWorldBook(book)
-            book.id
-        }
-
-        val chatsDir = staging.resolve("chats")
-        if (chatsDir.isDirectory) {
-            chatsDir.listFiles()?.filter { it.isDirectory || it.extension == "json" }?.forEach { entry ->
-                checkCancelled()
-                val chatJsonFile = when {
-                    entry.isFile && entry.extension == "json" -> entry
-                    entry.isDirectory -> entry.resolve("chat.json").takeIf { it.exists() }
-                        ?: entry.listFiles()?.firstOrNull { it.extension == "json" }
-                    else -> null
-                } ?: return@forEach
-                val obj = Jsonx.json.parseToJsonElement(chatJsonFile.readText()).jsonObject
-                val sourceId = obj.str("id") ?: chatJsonFile.nameWithoutExtension
-                val existing = importStore.resolveId(ns, sourceId)?.let { chats.getSession(it) }
-                // Do not overwrite local user edits on re-import of same source blob hash — simple: if mapped and updatedAt newer locally, retain
-                val targetId = existing?.id ?: mapId(ns, sourceId, "chat")
-                val overridesObj = obj["overrides"] as? JsonObject
-                val overrides = ChatOverrides(
-                    prompt = overridesObj?.str("prompt"),
-                    longTermMemory = overridesObj?.str("longTermMemory"),
-                    presetId = overridesObj?.str("presetId"),
-                    pureAiMode = overridesObj?.bool("pureAiMode"),
-                    autoMemorySummaryEveryN = overridesObj?.int("autoMemorySummaryEveryN"),
-                    lastAutoMemorySummaryAfterMessageId = overridesObj?.str("lastAutoMemorySummaryAfterMessageId"),
-                    mvuMode = overridesObj?.str("mvuMode"),
-                    mvuDirective = overridesObj?.str("mvuDirective"),
-                    knowledgeGraphEnabled = overridesObj?.bool("knowledgeGraphEnabled"),
-                    extraJson = overridesObj?.toString(),
-                )
-                val session = ChatSession(
-                    id = targetId,
-                    characterId = mapId(ns, obj.str("characterId") ?: "unknown", "character"),
-                    title = obj.str("title") ?: "对话",
-                    userPersonaId = obj.str("userPersonaId")?.let { mapId(ns, it, "persona") },
-                    isGroup = obj.bool("isGroup") ?: false,
-                    memberIds = obj.strList("memberIds").map { mapId(ns, it, "character") },
-                    groupDelayMs = obj.int("groupDelay") ?: 1500,
-                    overrides = overrides,
-                    forkedFromChatId = obj.str("forkedFromChatId"),
-                    forkedFromMessageId = obj.str("forkedFromMessageId"),
-                    forkedFromMessageIndex = obj.int("forkedFromMessageIndex"),
-                    createdAt = obj.str("createdAt") ?: nowIso(),
-                    updatedAt = obj.str("updatedAt") ?: nowIso(),
-                    sourceNamespace = ns,
-                    sourceId = sourceId,
-                    extraJson = obj.toString(),
-                )
-                if (existing != null && existing.updatedAt > session.updatedAt) {
-                    items += ImportReportItem("chat", sourceId, existing.id, "retained", "local edits kept")
-                } else {
-                    chats.saveSession(session)
-                    val messages = (obj["messages"] as? JsonArray) ?: JsonArray(emptyList())
-                    val nodes = messages.mapIndexed { idx, el ->
-                        val m = el.jsonObject
-                        val mid = m.str("id") ?: newId()
-                        val variants = (m["greetingVariants"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                        val candidates = if (!variants.isNullOrEmpty()) {
-                            variants.mapIndexed { vi, text ->
-                                MessageCandidate(
-                                    id = if (vi == 0) mid else newId(),
-                                    role = ChatRole.valueOf(m.str("role") ?: "assistant"),
-                                    content = text,
-                                    reasoningContent = m.str("reasoningContent"),
-                                    characterId = m.str("characterId"),
-                                    createdAt = m.str("ts") ?: nowIso(),
-                                    usageJson = m["usage"]?.toString(),
-                                    generationMetadataJson = m["generationMetadata"]?.toString(),
-                                    toolCallsJson = m["tool_calls"]?.toString(),
-                                    toolCallId = m.str("tool_call_id"),
-                                    extraJson = m.toString(),
-                                )
-                            }
-                        } else {
-                            listOf(
-                                MessageCandidate(
-                                    id = mid,
-                                    role = runCatching { ChatRole.valueOf(m.str("role") ?: "user") }.getOrDefault(ChatRole.user),
-                                    content = m.str("content") ?: "",
-                                    reasoningContent = m.str("reasoningContent"),
-                                    reasoningDurationSec = m.double("reasoningDurationSec"),
-                                    characterId = m.str("characterId"),
-                                    senderPersonaId = m.str("senderPersonaId"),
-                                    senderName = m.str("senderName"),
-                                    toolCallsJson = m["tool_calls"]?.toString(),
-                                    toolCallId = m.str("tool_call_id"),
-                                    toolRecordJson = m["toolRecord"]?.toString(),
-                                    usageJson = m["usage"]?.toString(),
-                                    generationMetadataJson = m["generationMetadata"]?.toString(),
-                                    createdAt = m.str("ts") ?: nowIso(),
-                                    extraJson = m.toString(),
-                                ),
-                            )
+    suspend fun execute(zipFile: File, sourceHint: String? = null, sourceLibraryId: String? = null,
+                        batchId: String = newId(), onProgress: suspend (ImportProgress) -> Unit = {},
+                        onCommit: suspend (ImportReport) -> Unit = {}): ImportReport =
+        withContext(Dispatchers.IO) {
+            val gateLease = dataGate?.sharedLease()
+            try {
+                if (!importMutex.tryLock()) throw StError.Conflict("an import is already running")
+                cancelRequested = false
+                if (!batchId.matches(Regex("[a-f0-9]{32}"))) { importMutex.unlock(); throw StError.Validation("invalid import batch identity") }
+                val startedAt = nowIso()
+                val staging = paths.importStaging.resolve(batchId)
+                val batchFiles = paths.attachments.resolve("imports/$batchId")
+                val items = mutableListOf<ImportReportItem>()
+                var source = sourceHint ?: "auto"
+                var owned = false
+                var stagingCreated = false
+                suspend fun publish(next: ImportProgress) { progress.value = next; onProgress(next) }
+                try {
+                    recoverInterrupted()
+                    if (importStore.batchStatus(batchId) != null) throw StError.Conflict("import batch identity exists")
+                    if (paths.importStaging.canonicalFile != paths.importStaging.absoluteFile || paths.attachments.canonicalFile != paths.attachments.absoluteFile ||
+                        staging.exists() || batchFiles.exists() || staging.canonicalFile != staging.absoluteFile || batchFiles.canonicalFile != batchFiles.absoluteFile)
+                        throw StError.Conflict("import directory identity exists or is linked")
+                    importStore.upsertBatch(ImportBatchEntity(batchId, source, "running", null, startedAt, startedAt))
+                    owned = true
+                    publish(ImportProgress(batchId, "unzipping", zipFile.name, 0f))
+                if (!staging.mkdir()) throw StError.Validation("cannot create import staging directory")
+                stagingCreated = true
+                ZipFile(zipFile).use { zip ->
+                    if (zip.entries().asSequence().any { it.name.substringAfterLast('/') == "BACKUP_META.json" })
+                        throw StError.Validation("native backup restore is not supported by source import")
+                }
+                unzip(zipFile, staging) { count, bytes -> publish(ImportProgress(batchId, "unzipping", "", 0f, count, bytes)) }
+                    checkCancelled()
+                    val settingsFile = staging.walkTopDown().firstOrNull { it.isFile && it.name == "settings.json" }
+                    val settings = settingsFile?.let(::readObject)
+                    val detected = detect(
+                        staging.walkTopDown().filter { it.isFile }.map { it.relativeTo(staging).invariantSeparatorsPath }.toList(), settings,
+                    )
+                    if (detected == "native") throw StError.Validation("native backup restore is not supported by source import")
+                    source = normalizeHint(sourceHint) ?: detected
+                    if (source !in setOf("desktop", "rikka_hub")) throw StError.Validation("unsupported archive: $source")
+                    val root = findRoot(staging, source, settingsFile)
+                    // Archive names and batch IDs are not source identity. An explicit library ID is optional.
+                    val libraryId = sourceLibraryId ?: settings?.string("libraryId") ?: settings?.string("installationId")
+                    val namespace = if (libraryId.isNullOrBlank()) source else "$source:${scoped("", libraryId)}"
+                    publish(progress.value.copy(phase = "merging", detail = source, fraction = 0.25f))
+                    val report = importStore.transaction {
+                        val merge = ImportMerge(namespace, importStore, chats, memory, attachments, paths, batchId, items, ::checkCancelled)
+                        when (source) {
+                                "desktop" -> DesktopImport(root, content, merge, items, ::checkCancelled, importStore.workspace).run()
+                            "rikka_hub" -> RikkaImport(root, staging, content, merge, items, ::checkCancelled).run()
                         }
-                        val selected = m.int("greetingVariantIndex") ?: 0
-                        MessageNode(
-                            id = newId(),
-                            chatId = targetId,
-                            orderIndex = idx.toLong(),
-                            candidates = candidates,
-                            selectedIndex = selected.coerceIn(0, candidates.lastIndex.coerceAtLeast(0)),
-                        )
-                    }
-                    chats.replaceAllMessages(targetId, nodes)
-                    overrides.longTermMemory?.let { text ->
-                        memory.saveMemory(
-                            LongTermMemory(targetId, text, version = 1, updatedAt = nowIso(), source = "import"),
-                        )
-                    }
-                    // memory file beside chat
-                    val memFile = chatJsonFile.parentFile?.resolve("long_term_memory.txt")
-                        ?: chatJsonFile.parentFile?.resolve("memory.txt")
-                    if (memFile?.exists() == true) {
-                        memory.saveMemory(LongTermMemory(targetId, memFile.readText(), 1, null, nowIso(), "import"))
-                    }
-                    val kgFile = chatJsonFile.parentFile?.resolve("knowledge_graph.json")
-                    if (kgFile?.exists() == true) {
-                        val kgObj = Jsonx.json.parseToJsonElement(kgFile.readText()).jsonObject
-                        memory.saveKg(
-                            KnowledgeGraph(
-                                chatId = targetId,
-                                entities = Jsonx.decode(kgObj["entities"]?.toString() ?: "[]"),
-                                relations = Jsonx.decode(kgObj["relations"]?.toString() ?: "[]"),
-                                version = kgObj.int("version") ?: 0,
-                                updatedAt = kgObj.str("updatedAt") ?: nowIso(),
-                                source = kgObj.str("source") ?: "mvu_agent",
-                            ),
-                        )
-                    }
-                    val state = obj["stateVariables"] as? JsonObject
-                    if (state != null) {
-                        memory.saveMvu(
-                            MvuState(
-                                chatId = targetId,
-                                version = state.int("version") ?: 1,
-                                updatedAt = state.str("updatedAt") ?: nowIso(),
-                                source = state.str("source") ?: "mvu_agent",
-                                tables = Jsonx.decodeOrNull(state["tables"]?.toString()) ?: emptyList(),
-                            ),
-                        )
-                    }
-                    // images dir
-                    val imagesDir = chatJsonFile.parentFile?.resolve("images")
-                    if (imagesDir?.isDirectory == true) {
-                        imagesDir.listFiles()?.forEach { img ->
-                            val rel = "$targetId/${img.name}"
-                            val dest = paths.attachments.resolve(rel).also { it.parentFile?.mkdirs() }
-                            img.copyTo(dest, overwrite = true)
-                            val aid = newId()
-                            attachments.upsert(
-                                AttachmentEntity(aid, rel, img.name, guessMime(img.name), img.length(), targetId, null, null, nowIso()),
-                            )
-                        }
-                    }
-                    items += ImportReportItem("chat", sourceId, targetId, "converted", null)
-                }
-            }
-        } else {
-            items += ImportReportItem("chats", null, null, "missing", "chats/ not present — old settings-only backup")
-        }
-
-        // Assistant config/history
-        val assistantSettings = staging.resolve("assistant_settings.json")
-            .takeIf { it.exists() }
-            ?: staging.resolve("assistant/settings.json")
-        if (assistantSettings?.exists() == true) {
-            content.saveAssistant(AssistantConfig("default", assistantSettings.readText(), nowIso(), ns))
-            items += ImportReportItem("assistant_settings", "assistant_settings", "default", "converted", null)
-        } else {
-            items += ImportReportItem("assistant_settings", null, null, "missing", null)
-        }
-        val assistantChat = staging.resolve("assistant_chat.json")
-            .takeIf { it.exists() }
-            ?: staging.resolve("assistant/chat.json")
-        if (assistantChat?.exists() == true) {
-            importStore.retainBlob(newId(), ns, "assistant_chat.json", assistantChat.readText(), nowIso())
-            items += ImportReportItem("assistant_chat", "assistant_chat.json", null, "retained", "stored raw for history migration")
-        }
-
-        items += ImportReportItem(
-            "assistant_workspace",
-            null,
-            null,
-            "deferred",
-            "Desktop built-in assistant workspace files are explicitly deferred",
-        )
-
-        // usage ledger optional
-        val usageDir = staging.resolve("usage")
-        if (usageDir.isDirectory) {
-            items += ImportReportItem("usage", "usage/", null, "retained", "usage jsonl retained as blobs")
-            usageDir.walkTopDown().filter { it.isFile }.forEach { f ->
-                importStore.retainBlob(newId(), ns, "usage/${f.name}", f.readText(), nowIso())
-            }
-        }
-
-        progress.value = ImportProgress(batchId, "desktop", "done", 1f)
-        val success = items.none { it.status == "failed" }
-        return ImportReport(batchId, "desktop", items, success = success)
-    }
-
-    private suspend fun importRikkaHub(batchId: String, staging: File, items: MutableList<ImportReportItem>): ImportReport {
-        val ns = "rikka:$batchId"
-        progress.value = ImportProgress(batchId, "rikka", "db", 0.3f)
-        val dbFile = staging.walkTopDown().firstOrNull { it.name == "rikka_hub.db" }
-        val settingsFile = staging.walkTopDown().firstOrNull { it.name == "settings.json" }
-        if (settingsFile != null) {
-            content.saveSettingsJson(settingsFile.readText(), nowIso())
-            items += ImportReportItem("settings", "settings.json", "global", "converted", null)
-        } else {
-            items += ImportReportItem("settings", null, null, "missing", "settings-only or incomplete package")
-        }
-        if (dbFile == null) {
-            items += ImportReportItem("database", "rikka_hub.db", null, "missing", "No database in backup; settings-only import")
-            return ImportReport(batchId, "rikka_hub", items, success = items.none { it.status == "failed" })
-        }
-        // Work on a copy — never replace app DB
-        val dbCopy = staging.resolve("rikka_hub.working.db")
-        dbFile.copyTo(dbCopy, overwrite = true)
-        val db = SQLiteDatabase.openDatabase(dbCopy.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        try {
-            // schema version heuristic
-            val version = runCatching {
-                db.rawQuery("PRAGMA user_version", null).use { c -> if (c.moveToFirst()) c.getInt(0) else -1 }
-            }.getOrDefault(-1)
-            items += ImportReportItem("schema", version.toString(), null, "converted", "source user_version=$version (sample ref schema 25)")
-
-            // Assistants / providers if tables exist
-            if (tableExists(db, "assistant") || tableExists(db, "AssistantEntity")) {
-                val table = if (tableExists(db, "assistant")) "assistant" else "AssistantEntity"
-                db.rawQuery("SELECT * FROM $table", null).use { c ->
-                    while (c.moveToNext()) {
-                        val id = c.optString("id") ?: newId()
-                        val payload = rowToJson(c)
-                        content.saveAssistant(AssistantConfig(mapId(ns, id, "assistant"), payload, nowIso(), ns))
-                        items += ImportReportItem("assistant", id, mapId(ns, id, "assistant"), "converted", null)
-                    }
-                }
-            }
-
-            // Conversations
-            val convTable = when {
-                tableExists(db, "conversation") -> "conversation"
-                tableExists(db, "ConversationEntity") -> "ConversationEntity"
-                else -> null
-            }
-            val nodeTable = when {
-                tableExists(db, "message_node") -> "message_node"
-                tableExists(db, "MessageNodeEntity") -> "MessageNodeEntity"
-                else -> null
-            }
-            if (convTable != null) {
-                db.rawQuery("SELECT * FROM $convTable", null).use { c ->
-                    while (c.moveToNext()) {
+                        val skillImport = SkillImport(importStore.skills, merge, items, ::checkCancelled)
+                        skillImport.run(root.resolve("skills"))
+                        if (source == "rikka_hub") skillImport.restoreBuiltin()
                         checkCancelled()
-                        val sourceId = c.optString("id") ?: continue
-                        val targetId = mapId(ns, sourceId, "chat")
-                        val title = c.optString("title") ?: "Conversation"
-                        val assistantId = c.optString("assistant_id") ?: c.optString("assistantId")
-                        val session = ChatSession(
-                            id = targetId,
-                            characterId = assistantId?.let { mapId(ns, it, "assistant") } ?: "imported",
-                            title = title,
-                            createdAt = nowIso(),
-                            updatedAt = nowIso(),
-                            sourceNamespace = ns,
-                            sourceId = sourceId,
-                            extraJson = rowToJson(c),
-                        )
-                        chats.saveSession(session)
-                        val nodes = mutableListOf<MessageNode>()
-                        if (nodeTable != null) {
-                            db.rawQuery(
-                                "SELECT * FROM $nodeTable WHERE conversation_id = ? OR conversationId = ? ORDER BY order_index ASC, `order` ASC",
-                                arrayOf(sourceId, sourceId),
-                            ).use { nc ->
-                                // flexible column read
-                                var idx = 0L
-                                while (nc.moveToNext()) {
-                                    val messagesJson = nc.optString("messages") ?: nc.optString("message_list") ?: "[]"
-                                    val selected = nc.optInt("select_index") ?: nc.optInt("selectedIndex") ?: 0
-                                    val arr = runCatching { Jsonx.json.parseToJsonElement(messagesJson).jsonArray }.getOrNull()
-                                    val candidates = arr?.mapIndexed { i, el ->
-                                        val m = el.jsonObject
-                                        MessageCandidate(
-                                            id = m.str("id") ?: newId(),
-                                            role = mapRikkaRole(m.str("role")),
-                                            content = extractText(m),
-                                            reasoningContent = m.str("reasoning") ?: m.str("reasoningContent"),
-                                            createdAt = nowIso(),
-                                            extraJson = m.toString(),
-                                        )
-                                    } ?: emptyList()
-                                    if (candidates.isNotEmpty()) {
-                                        nodes += MessageNode(
-                                            id = nc.optString("id") ?: newId(),
-                                            chatId = targetId,
-                                            orderIndex = idx++,
-                                            candidates = candidates,
-                                            selectedIndex = selected.coerceIn(0, candidates.lastIndex),
-                                        )
-                                    }
+                        val result = ImportReport(batchId, source, items.toList(), success = true)
+                        importStore.upsertBatch(ImportBatchEntity(batchId, source, "done", Jsonx.encode(result), startedAt, nowIso()))
+                        onCommit(result)
+                        result
+                    }
+                    publish(progress.value.copy(phase = "done", detail = source, fraction = 1f))
+                    report
+                } catch (cancel: CancellationException) {
+                    withContext(NonCancellable) {
+                        if (owned && importStore.batchStatus(batchId) != "done") recordFailure(batchId, source, startedAt, items, cancel, true)
+                    }
+                    throw cancel
+                } catch (error: Exception) {
+                    val cancelled = error is CancelledImport
+                    withContext(NonCancellable) {
+                        if (!owned) throw error
+                        if (importStore.batchStatus(batchId) == "done") throw error
+                        recordFailure(batchId, source, startedAt, items, error, cancelled)
+                    }
+                } finally {
+                    try { withContext(NonCancellable) {
+                        if (owned) {
+                            // Actual commit wins cancellation at the transaction's return/dispatcher boundary.
+                            val committed = try { importStore.batchStatus(batchId) == "done" }
+                                catch (error: Exception) { dataGate?.requireRecovery(); throw error }
+                            if (stagingCreated) {
+                                try {
+                                    if (!committed) cleanupOwned(batchFiles, paths.attachments.resolve("imports"))
+                                    cleanupOwned(staging, paths.importStaging)
+                                } catch (error: Exception) {
+                                    if (!committed) dataGate?.requireRecovery()
+                                    throw StError.Conflict("source import cleanup needs attention; private files retained")
                                 }
                             }
-                        } else {
-                            // fallback: conversation.nodes JSON field
-                            val nodesField = c.optString("nodes")
-                            if (!nodesField.isNullOrBlank()) {
-                                items += ImportReportItem(
-                                    "messages",
-                                    sourceId,
-                                    targetId,
-                                    "retained",
-                                    "Using legacy conversation.nodes JSON; verify schema",
-                                )
-                                importStore.retainBlob(newId(), ns, "conversation/$sourceId/nodes.json", nodesField, nowIso())
-                            }
                         }
-                        if (nodes.isNotEmpty()) {
-                            chats.replaceAllMessages(targetId, nodes)
-                        }
-                        items += ImportReportItem("chat", sourceId, targetId, "converted", null)
-                    }
+                    } } finally { importMutex.unlock() }
                 }
-            } else {
-                items += ImportReportItem("conversation", null, null, "failed", "No conversation table found for this schema")
-            }
-
-            // Copy upload files if present
-            val uploadDir = staging.walkTopDown().firstOrNull { it.isDirectory && it.name == "upload" }
-            uploadDir?.walkTopDown()?.filter { it.isFile }?.forEach { f ->
-                val rel = "rikka/${f.name}"
-                f.copyTo(paths.attachments.resolve(rel).also { it.parentFile?.mkdirs() }, overwrite = true)
-                attachments.upsert(
-                    AttachmentEntity(newId(), rel, f.name, guessMime(f.name), f.length(), null, null, null, nowIso()),
-                )
-            }
-            items += ImportReportItem("credentials", null, null, "missing", "Secrets not migrated; reconfigure in UI")
-        } finally {
-            db.close()
+            } finally { gateLease?.close() }
         }
-        progress.value = ImportProgress(batchId, "rikka", "done", 1f)
-        return ImportReport(batchId, "rikka_hub", items, success = items.none { it.status == "failed" })
+
+    private suspend fun recordFailure(
+        batchId: String, source: String, startedAt: String, items: List<ImportReportItem>, error: Exception, cancelled: Boolean,
+    ): ImportReport {
+        val rolledBack = items.map { item ->
+            if (item.status == "converted") item.copy(targetId = null, status = "rolled_back", message = "batch not committed") else item
+        } + ImportReportItem("batch", null, null, if (cancelled) "cancelled" else "failed", error.message)
+        val report = ImportReport(batchId, source, rolledBack, success = false, cancelled = cancelled)
+        importStore.upsertBatch(ImportBatchEntity(batchId, source, if (cancelled) "cancelled" else "failed",
+            Jsonx.encode(report), startedAt, nowIso()))
+        progress.value = ImportProgress(batchId, if (cancelled) "cancelled" else "failed", error.message.orEmpty(), 0f)
+        return report
     }
 
-    private suspend fun mapId(ns: String, sourceId: String, type: String): String {
-        importStore.resolveId(ns, sourceId)?.let { return it }
-        val id = newId()
-        importStore.mapId(ns, sourceId, id, type)
-        return id
-    }
-
-    private suspend fun importJsonDir(
-        dir: File?,
-        ns: String,
-        type: String,
-        items: MutableList<ImportReportItem>,
-        save: suspend (String, JsonObject) -> String,
-    ) {
-        if (dir == null || !dir.isDirectory) {
-            items += ImportReportItem(type, null, null, "missing", "${dir?.name} missing")
-            return
-        }
-        dir.listFiles()?.filter { it.extension == "json" }?.forEach { f ->
-            checkCancelled()
-            val obj = Jsonx.json.parseToJsonElement(f.readText()).jsonObject
-            val sourceId = obj.str("id") ?: f.nameWithoutExtension
-            val target = save(sourceId, obj)
-            items += ImportReportItem(type, sourceId, target, "converted", null)
-        }
-    }
-
-    private fun checkCancelled() {
+    private suspend fun checkCancelled() {
+        currentCoroutineContext().ensureActive()
         if (cancelRequested) throw CancelledImport()
+    }
+
+    private suspend fun unzip(archive: File, root: File, update: suspend (Int, Long) -> Unit) {
+        val seen = mutableSetOf<String>()
+        val objects = mutableSetOf(root.path)
+        fun reserve(file: File) {
+            if (file.path !in objects && objects.size >= 200_001) throw StError.Validation("source archive exceeds 200000 expanded entries")
+            objects += file.path
+        }
+        fun directory(file: File) {
+            val chain = mutableListOf<File>()
+            var current: File? = file
+            while (current != null && current != root) {
+                if (!current.toPath().startsWith(root.toPath())) throw StError.Validation("archive directory escapes staging")
+                chain += current; current = current.parentFile
+            }
+            if (current != root) throw StError.Validation("archive directory escapes staging")
+            // Count implicit parent directories too; failure cleanup must be able to walk the whole tree.
+            for (parent in chain.asReversed()) {
+                reserve(parent)
+                if (!parent.isDirectory && !parent.mkdir()) throw StError.Validation("cannot create archive directory")
+            }
+        }
+        var bytes = 0L
+        var files = 0
+        var lastUpdate = 0L
+        ZipFile(archive).use { zip ->
+            for (entry in zip.entries().asSequence()) {
+                checkCancelled()
+                if (seen.size >= 200_000) throw StError.Validation("source archive exceeds 200000 entries")
+                val target = inside(root, entry.name) ?: throw StError.Validation("archive path escapes staging: ${entry.name}")
+                if (!seen.add(target.path)) throw StError.Validation("duplicate archive path: ${entry.name}")
+                if (entry.isDirectory) {
+                    directory(target)
+                } else {
+                    directory(target.parentFile!!)
+                    reserve(target)
+                    zip.getInputStream(entry).use { input -> target.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            checkCancelled()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            bytes += count
+                            if (bytes > 8L * 1024 * 1024 * 1024) throw StError.Validation("source archive exceeds 8 GiB")
+                            output.write(buffer, 0, count)
+                            val at = System.nanoTime() / 1_000_000
+                            if (at - lastUpdate >= 500) { update(files, bytes); lastUpdate = at }
+                        }
+                    } }
+                    files++
+                }
+            }
+        }
+        update(files, bytes)
+    }
+
+    /** Single-item postorder cleanup. Never follows symlink children or recursively deletes a broad root. */
+    private fun cleanupOwned(root: File, parent: File) {
+        fun stat(file: File) = try { Os.lstat(file.path) }
+            catch (error: ErrnoException) { if (error.errno == OsConstants.ENOENT) null else throw StError.Validation("import cleanup inspection failed") }
+        val initial = stat(root) ?: return
+        if (root.parentFile != parent || !root.name.matches(Regex("[a-f0-9]{32}")) || parent.canonicalFile != parent.absoluteFile ||
+            root.canonicalFile != root.absoluteFile || !OsConstants.S_ISDIR(initial.st_mode)) throw StError.Validation("invalid import cleanup root")
+        val pending = java.util.ArrayDeque<Pair<File, Boolean>>()
+        pending.add(root to false)
+        var count = 0
+        while (pending.isNotEmpty()) {
+            val (file, visited) = pending.removeLast()
+            val currentRoot = stat(root) ?: throw StError.Validation("import cleanup root disappeared")
+            if (currentRoot.st_dev != initial.st_dev || currentRoot.st_ino != initial.st_ino || !OsConstants.S_ISDIR(currentRoot.st_mode))
+                throw StError.Validation("import cleanup root changed")
+            var ancestor = file.parentFile
+            while (ancestor != null && ancestor != parent) {
+                if (stat(ancestor)?.let { OsConstants.S_ISDIR(it.st_mode) } != true) throw StError.Validation("import cleanup parent is linked or missing")
+                ancestor = ancestor.parentFile
+            }
+            val info = stat(file) ?: continue
+            if (!file.toPath().startsWith(root.toPath())) throw StError.Validation("import cleanup escapes owned root")
+            if (OsConstants.S_ISDIR(info.st_mode) && !visited) {
+                if (++count > 200_001) throw StError.Validation("import cleanup exceeds entry budget")
+                val children = file.listFiles() ?: throw StError.Validation("import cleanup directory unavailable")
+                if (children.size + count + pending.size > 400_002) throw StError.Validation("import cleanup exceeds entry budget")
+                pending.add(file to true)
+                children.forEach { pending.add(it to false) }
+            } else {
+                if (!visited && ++count > 200_001) throw StError.Validation("import cleanup exceeds entry budget")
+                if (!OsConstants.S_ISDIR(info.st_mode) && !OsConstants.S_ISREG(info.st_mode) && !OsConstants.S_ISLNK(info.st_mode))
+                    throw StError.Validation("special import cleanup file rejected")
+                if (!file.delete()) throw StError.Validation("import cleanup failed")
+            }
+        }
     }
 
     companion object {
         fun nowIso(): String = Instant.now().toString()
         fun newId(): String = UUID.randomUUID().toString().replace("-", "")
-        fun guessMime(name: String): String = when (name.substringAfterLast('.').lowercase()) {
+        fun guessMime(name: String): String = AttachmentMimeTypes.fromFilename(name) ?: when (name.substringAfterLast('.').lowercase()) {
             "png" -> "image/png"
             "jpg", "jpeg" -> "image/jpeg"
             "webp" -> "image/webp"
             "gif" -> "image/gif"
-            "mp3" -> "audio/mpeg"
-            "wav" -> "audio/wav"
+            "pdf" -> "application/pdf"
             "txt", "md" -> "text/plain"
             else -> "application/octet-stream"
         }
@@ -574,90 +320,26 @@ class ImportService(
 
 class CancelledImport : Exception("import cancelled")
 
-data class PreflightResult(val source: String, val entries: List<String>, val notes: List<String> = emptyList())
-
-private fun unzipSafe(zipFile: File, dest: File) {
-    ZipFile(zipFile).use { zip ->
-        val destPath = dest.canonicalFile.toPath()
-        zip.entries().asSequence().forEach { entry ->
-            val out = dest.resolve(entry.name).canonicalFile
-            if (!out.toPath().startsWith(destPath)) {
-                throw StError.Validation("zip slip rejected: ${entry.name}")
-            }
-            if (entry.isDirectory) {
-                out.mkdirs()
-            } else {
-                out.parentFile?.mkdirs()
-                zip.getInputStream(entry).use { input ->
-                    FileOutputStream(out).use { output -> input.copyTo(output) }
-                }
-            }
-        }
-    }
+private fun normalizeHint(hint: String?) = when (hint) {
+    null, "auto" -> null
+    "rikka", "rikkahub", "rikka_hub" -> "rikka_hub"
+    else -> hint
 }
 
-private fun tableExists(db: SQLiteDatabase, name: String): Boolean {
-    db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(name)).use {
-        return it.moveToFirst()
-    }
+private fun detect(entries: List<String>, settings: JsonObject?): String = when {
+    entries.any { it.substringAfterLast('/') == "BACKUP_META.json" } -> "native"
+    entries.any { it.substringAfterLast('/') == "rikka_hub.db" } -> "rikka_hub"
+    settings?.let { "assistants" in it || "providers" in it } == true -> "rikka_hub"
+    entries.any { "chats/" in it || "characters/" in it || it.endsWith("settings.json") } -> "desktop"
+    else -> "unknown"
 }
 
-private fun android.database.Cursor.optString(column: String): String? {
-    val i = getColumnIndex(column)
-    if (i < 0 || isNull(i)) return null
-    return getString(i)
+private fun findRoot(staging: File, source: String, settingsFile: File?): File {
+    if (settingsFile != null) return settingsFile.parentFile!!
+    val roots = staging.walkTopDown().filter { dir -> dir.isDirectory && when (source) {
+        "desktop" -> dir.resolve("chats").isDirectory || dir.resolve("characters").isDirectory
+        else -> dir.resolve("rikka_hub.db").isFile || dir.resolve("database/rikka_hub.db").isFile
+    } }.toList()
+    if (roots.size != 1) throw StError.Validation("archive does not contain one identifiable source root")
+    return roots.single()
 }
-
-private fun android.database.Cursor.optInt(column: String): Int? {
-    val i = getColumnIndex(column)
-    if (i < 0 || isNull(i)) return null
-    return getInt(i)
-}
-
-private fun rowToJson(c: android.database.Cursor): String {
-    val map = mutableMapOf<String, JsonElement>()
-    for (i in 0 until c.columnCount) {
-        val name = c.getColumnName(i)
-        map[name] = when (c.getType(i)) {
-            android.database.Cursor.FIELD_TYPE_INTEGER -> JsonPrimitive(c.getLong(i))
-            android.database.Cursor.FIELD_TYPE_FLOAT -> JsonPrimitive(c.getDouble(i))
-            android.database.Cursor.FIELD_TYPE_STRING -> JsonPrimitive(c.getString(i))
-            android.database.Cursor.FIELD_TYPE_NULL -> JsonPrimitive(null as String?)
-            else -> JsonPrimitive("<blob>")
-        }
-    }
-    return JsonObject(map).toString()
-}
-
-private fun mapRikkaRole(role: String?): ChatRole = when (role?.lowercase()) {
-    "system" -> ChatRole.system
-    "user" -> ChatRole.user
-    "assistant" -> ChatRole.assistant
-    "tool" -> ChatRole.tool
-    else -> ChatRole.assistant
-}
-
-private fun extractText(m: JsonObject): String {
-    m.str("content")?.let { return it }
-    val parts = m["parts"] as? JsonArray
-    if (parts != null) {
-        return parts.mapNotNull { (it as? JsonObject)?.str("text") }.joinToString("")
-    }
-    return ""
-}
-
-private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
-private fun JsonObject.bool(key: String): Boolean? {
-    val p = this[key] as? JsonPrimitive ?: return null
-    return p.contentOrNull?.toBooleanStrictOrNull()
-}
-private fun JsonObject.int(key: String): Int? {
-    val p = this[key] as? JsonPrimitive ?: return null
-    return p.contentOrNull?.toIntOrNull()
-}
-private fun JsonObject.double(key: String): Double? {
-    val p = this[key] as? JsonPrimitive ?: return null
-    return p.contentOrNull?.toDoubleOrNull()
-}
-private fun JsonObject.strList(key: String): List<String> =
-    (this[key] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()

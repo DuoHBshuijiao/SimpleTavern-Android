@@ -1,38 +1,26 @@
-# VERIFICATION
+# 验证记录
 
-日期：2026-09-30
+## 既有构建证据（2026-10-11）
 
-## 构建
+整理前的最新记录：`:app:assembleDebug assembleBackendRelease --offline --no-daemon --console=plain` 最终 exit 0，BUILD SUCCESSFUL in 1m 29s；673 tasks / 44 executed / 629 up-to-date。
 
-| 项 | 值 |
-|----|----|
-| 命令 | `gradlew.bat :app:assembleDebug`（计划） |
-| JDK | D:\JDK17（17.0.12） |
-| Android SDK | **当时本机未安装 / 未配置** |
-| 结果 | 见下文实际执行记录 |
+产物时间均为 Asia/Hong_Kong：
+
+| 产物 | 字节 | 时间 |
+| --- | ---: | --- |
+| Debug APK | 15,319,988 | 11:21:08 |
+| unsigned Release APK | 10,833,127 | 11:21:14 |
+| memory Release AAR | 498,311 | 11:20:28 |
+| import Release AAR（复用） | 346,695 | 11:13:17 |
+
+聚合构建包含十个后端 AAR。它们是独立模块包，单个 api AAR 不包含其它模块和第三方依赖；源码接入与 JNI 要求见 [CORE_API](CORE_API.md)。诊断 APK 未签名为产品，不代表前端完成。
+
+## 本次仓库整理
+
+只合并文档、压缩重复历史、补充临时文件忽略规则，并删除旧构建日志及 build/diagnostics 的一次性 JVM 检查。生产源码、构建产物、SDK 配置、运行时资源与第三方源码/许可证保留。
+
+未重新运行构建或测试。文档本地链接、Git 空白检查和清理范围在整理后核对；上面的成功记录属于整理前已执行构建。
 
 ## 未验证
 
-- 真机后台/锁屏继续  
-- 骁龙 8 Elite 性能采样  
-- 用户桌面完整包 / RikkaHub 用户版本备份  
-- PRoot 隔离越界用例  
-- 四协议真实上游流式  
-
-## 证据策略
-
-构建日志写入本文件「实际执行」节；设备日志与采样另附路径。不得复制未执行的成功记录。
-
-## 实际执行
-
-| 项 | 结果 |
-|----|------|
-| 命令 | `tools\_build.bat` → `gradlew.bat :app:assembleDebug --no-daemon` |
-| JDK | `D:\JDK17`（17.0.12） |
-| SDK | `D:\Android\Sdk`（platforms;android-35，build-tools;35.0.0） |
-| 结果 | **BUILD SUCCESSFUL**（约 28s，增量；首次含 Gradle 分发包下载约 15m） |
-| 产物 | `app/build/outputs/apk/debug/app-debug.apk` |
-| 日志 | 仓库根 `build_log.txt`（本地构建痕迹，可不入库） |
-| 自动化测试 | **未运行**（按用户硬要求：不准搞一堆测试；本轮无新增测试文件） |
-
-未在本机执行真机安装、导入样本或沙箱越界实测。
+实际用户包导入/恢复、真实上游调用、设备后台/锁屏、沙箱文件边界、崩溃与性能采样仍缺运行证据。原生正则没有硬超时。没有新增测试框架或测试套件；源码/静态产物检查不能代替这些运行验收。

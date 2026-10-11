@@ -23,6 +23,15 @@ sealed class StError(
     data class Provider(override val message: String, override val details: Map<String, String> = emptyMap()) :
         StError("provider", message, details)
 
+    data class Accounting(override val message: String, override val details: Map<String, String> = emptyMap()) :
+        StError("accounting_failed", message, details)
+
+    data class Search(override val code: String, override val message: String,
+        override val details: Map<String, String> = emptyMap()) : StError(code, message, details)
+
+    data class Speech(override val code: String, override val message: String,
+        override val details: Map<String, String> = emptyMap()) : StError(code, message, details)
+
     data class Sandbox(override val message: String, override val details: Map<String, String> = emptyMap()) :
         StError("sandbox", message, details)
 

@@ -18,6 +18,7 @@ data class AttachmentRef(
     val height: Int? = null,
     val originalName: String? = null,
     val sourceUri: String? = null,
+    val modelVisible: Boolean = true,
 )
 
 @Serializable
@@ -91,6 +92,8 @@ data class ChatOverrides(
     val autoMemorySummaryEveryN: Int? = null,
     val lastAutoMemorySummaryAfterMessageId: String? = null,
     val autoMemorySummarySilent: Boolean = false,
+    val autoMemorySummaryNextAskTier: Int = 1,
+    val lastStateMaintenanceAfterMessageId: String? = null,
     val mvuMode: String? = null,
     val mvuDirective: String? = null,
     val groupMvuEnabled: Boolean? = null,
@@ -98,10 +101,42 @@ data class ChatOverrides(
     val knowledgeGraphEnabled: Boolean? = null,
     val knowledgeGraphInjectPosition: String? = null,
     val knowledgeGraphInjectDepth: Int = 5,
+    val knowledgeGraphBeforeLastRole: String = "assistant",
     val ttsJson: String? = null,
     val contentRegexRulesJson: String? = null,
+    val contentRegexScanDepthDefault: Int = 50,
+    val contentRegexEnabledByRuleId: Map<String, Boolean> = emptyMap(),
     val extraJson: String? = null,
+    val assistant: AssistantChatBinding? = null,
+    val sessionSystemPromptEnabled: Boolean = true,
+    val worldBookSelectionMode: String = "merge", // merge | character | session
+    val contextMessageLimit: Int? = null, // null/0: no message-count limit; positive: stepped history cutoff
+    val messageTemplate: String? = null,
+    val groupMvuTemplateCharacterId: String? = null,
 )
+
+@Serializable
+data class ChatCreationDefaults(
+    val overrides: ChatOverrides = ChatOverrides(),
+    val initialMessages: List<MessageCandidate> = emptyList(),
+    val userPersonaId: String? = null,
+)
+
+@Serializable
+data class ImportedAssistantMemory(val assistantSourceId: String, val content: String)
+
+@Serializable
+data class ImportedMemoryLibrary(val entries: Map<String, ImportedAssistantMemory> = emptyMap())
+
+@Serializable
+data class AssistantMemoryPool(val assistantId: String, val sourceNamespace: String, val ownerId: String, val enabled: Boolean)
+
+@Serializable
+data class AssistantMemoryRow(val id: String, val content: String)
+
+@Serializable
+data class AssistantMemoryPage(val pool: AssistantMemoryPool, val entries: List<AssistantMemoryRow>,
+    val hasMore: Boolean, val nextAfterId: String? = null)
 
 @Serializable
 data class ChatSession(
@@ -172,6 +207,12 @@ data class WorldBookEntry(
     val content: String = "",
     val enabled: Boolean = true,
     val orderIndex: Int = 0,
+    val scanDepth: Int? = null, // null keeps the desktop book/session scan policy
+    val constantActive: Boolean = false,
+    val priority: Int = 0,
+    val position: String? = null, // null keeps the desktop book/session insertion policy
+    val injectDepth: Int = 4,
+    val role: ChatRole = ChatRole.system,
 )
 
 @Serializable
@@ -211,6 +252,9 @@ data class MemorySummaryJob(
     val createdAt: String,
     val updatedAt: String,
 )
+
+@Serializable
+data class SelectedMessage(val nodeId: String, val orderIndex: Long, val candidate: MessageCandidate)
 
 @Serializable
 data class StatusTableRow(val field: String, val cells: Map<String, String> = emptyMap())
@@ -296,6 +340,7 @@ enum class LlmProtocol {
     OPENAI_RESPONSES,
     ANTHROPIC_MESSAGES,
     GEMINI_GENERATE_CONTENT,
+    BEDROCK_CONVERSE,
 }
 
 @Serializable
@@ -308,6 +353,14 @@ data class UsageTokens(
     val cacheWriteInputTokens: Long? = null,
     val serviceTier: String? = null,
     val fastRequested: Boolean? = null,
+    val requestedServiceTier: String? = null,
+    val inputTokensIncludeCache: Boolean? = null,
+    val outputTokensIncludeReasoning: Boolean? = null,
+    val cacheWriteShortTokens: Long? = null,
+    val cacheWriteLongTokens: Long? = null,
+    val resolvedModel: String? = null,
+    val providerCost: ProviderReportedCost? = null,
+    val pricingWarnings: List<String> = emptyList(),
 )
 
 @Serializable
@@ -325,7 +378,18 @@ data class GenerationMetadata(
     val firstTokenLatencyMs: Long? = null,
     val totalDurationMs: Long? = null,
     val usage: UsageTokens? = null,
+    val providerTurn: ProviderTurn? = null,
+    val cost: CostSnapshot? = null,
+    val search: NativeSearchTrace? = null,
+    val webSearchMode: String? = null,
+    val webSearchProvider: String? = null,
+    val fileTransfers: List<ProviderFileTransfer> = emptyList(),
 )
+
+/** Completed native assistant output, including opaque reasoning state; never executable by itself. */
+@Serializable
+data class ProviderTurn(val protocol: LlmProtocol, val model: String, val contentJson: String,
+    val mediaAttachmentIds: List<String> = emptyList())
 
 @Serializable
 sealed class StreamEvent {
@@ -349,6 +413,10 @@ sealed class StreamEvent {
         val reasoningContent: String? = null,
         val usage: UsageTokens? = null,
         val metadata: GenerationMetadata? = null,
+        val providerTurn: ProviderTurn? = null,
+        val search: NativeSearchTrace? = null,
+        val continuation: Boolean = false,
+        @kotlinx.serialization.Transient val media: List<ToolMedia> = emptyList(),
     ) : StreamEvent()
 
     @Serializable
@@ -374,7 +442,24 @@ data class ContextMessage(
     val name: String? = null,
     val toolCallId: String? = null,
     val toolCallsJson: String? = null,
+    val providerTurn: ProviderTurn? = null,
+    val attachments: List<AttachmentRef> = emptyList(),
+    @kotlinx.serialization.Transient val media: List<ContextMedia> = emptyList(),
+    @kotlinx.serialization.Transient val sourceCreatedAt: String? = null,
+    @kotlinx.serialization.Transient val sourceSenderName: String? = null,
 )
+
+/** Request-local file contents; never serialized into task records, messages or backups. */
+data class ContextMedia(val filename: String, val mimeType: String, val base64: String? = null, val text: String? = null,
+    val byteSize: Int = 0, val sourceMimeType: String? = null,
+    val attachmentId: String? = null, val uploadFile: java.io.File? = null, val providerFile: String? = null) {
+    override fun toString() = "ContextMedia(<private>)"
+}
+
+/** File-operation status only; no upload URLs, local paths, credentials or reusable remote handles. */
+@Serializable
+data class ProviderFileTransfer(val attachmentId: String?, val filename: String, val bytes: Long,
+    val status: String, val cleanupHttpCode: Int? = null, val reuseCount: Int = 0, val retainedUntil: String? = null)
 
 @Serializable
 data class ForkLineage(
@@ -431,6 +516,7 @@ data class ApprovalRequest(
     val category: ApprovalCategory,
     val toolName: String,
     val argumentsJson: String,
+    // File calls carry a paged exact-byte premise manifest; full bytes are live-only, not a replay handle.
     val editPremiseJson: String? = null,
     val status: ApprovalDecision = ApprovalDecision.PENDING,
     val createdAt: String,

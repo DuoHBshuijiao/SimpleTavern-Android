@@ -37,6 +37,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     packaging {
+        jniLibs.useLegacyPackaging = true
+        jniLibs.keepDebugSymbols += setOf("**/libstproot.so", "**/libstprootloader.so", "**/libtalloc.so", "**/libandroid-shmem.so")
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
 }
