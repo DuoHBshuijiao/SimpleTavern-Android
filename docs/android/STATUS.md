@@ -1,5 +1,7 @@
 # 当前状态
 
+2026-10-22 增补：两端原生联网与订阅首轮实现已落地，Android Debug 构建通过。新增官方 ChatGPT SIWC、Grok 设备码兼容，以及 DeepSeek/Claude 抓取与 GPT 联动网页能力。接口见 [CORE_API.md](CORE_API.md)，剩余项见 [NATIVE_WEB_SUBSCRIPTION_PLAN.md](NATIVE_WEB_SUBSCRIPTION_PLAN.md)。额度数字查询尚未完成，返回 unsupported 和管理链接；真实账号/浏览器回调/联网调用未验收，完整产品前端仍待开发。下文为此前基线。
+
 更新：2026-10-11。业务核心与诊断宿主已有离线 Debug/Release 构建证据；产品前端及完整设备验收尚未完成。
 
 ## 已接入

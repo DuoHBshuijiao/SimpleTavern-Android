@@ -108,6 +108,8 @@ internal object ProviderCatalog {
         val status = when {
             id == "github-copilot" -> "oauth_device_github_com"
             id == "openai-codex" -> "oauth_codex_compatibility"
+            id == "openai-chatgpt" -> "oauth_chatgpt_official"
+            id == "xai-oauth" -> "oauth_xai_device_compatibility"
             id == "amazon-bedrock" && variant in setOf("bedrock", "bedrock_converse") -> "bedrock_bearer"
             oauth -> "unsupported_oauth"
             variant != null -> "unsupported_protocol_variant"

@@ -31,6 +31,7 @@ data class ProviderConfig(
     val cachePlan: GeminiCachePlan? = null,
     val unversionedRoot: Boolean = false,
     val codexBackend: Boolean = false,
+    val chatgptSubscription: Boolean = false,
     val streaming: Boolean = true,
     val presetId: String? = null,
     val bedrockBackend: Boolean = false,
@@ -57,6 +58,7 @@ data class LlmRequest(
     val toolsJson: String? = null, val extra: Map<String, String> = emptyMap(),
     val nativeWebSearch: Boolean = false,
     val taskId: String? = null,
+    val nativeWebFetch: Boolean = nativeWebSearch,
 )
 
 class LlmClient(
@@ -228,34 +230,38 @@ class LlmClient(
     private suspend fun FlowCollector<StreamEvent>.responses(p: ProviderConfig, r: LlmRequest, beforeExecute: suspend () -> Unit) {
         val wire = GenerationParameters.wire(r.protocol, r.temperature, r.topP, r.extra)
         val imageGeneration = wire.obj("image_generation")
+        if (p.chatgptSubscription && imageGeneration != null) throw StError.Unsupported("ChatGPT subscription preview does not support image generation tools")
         val cacheSystem = wire.obj("prompt_cache_options")?.text("mode") == "explicit"
         if (cacheSystem && r.messages.none { it.role == ChatRole.system && it.content.isNotBlank() })
             throw StError.Validation("explicit system cache requires a nonempty system message")
         val body = buildJsonObject {
-            put("model", r.model); put("stream", p.streaming)
+            put("model", r.model); put("stream", p.streaming || p.chatgptSubscription)
             put("store", false)
             put("include", buildJsonArray {
                 add(JsonPrimitive("reasoning.encrypted_content"))
                 if (r.nativeWebSearch) add(JsonPrimitive("web_search_call.action.sources"))
             })
-            if (p.codexBackend) put("instructions", if (cacheSystem) "" else
+            if (p.codexBackend || p.chatgptSubscription) put("instructions", if (cacheSystem) "" else
                 r.messages.filter { it.role == ChatRole.system }.joinToString("\n\n") { it.content })
-            val input = if (p.codexBackend && !cacheSystem) r.messages.filter { it.role != ChatRole.system } else r.messages
+            val input = if ((p.codexBackend && !cacheSystem) || p.chatgptSubscription) r.messages.filter { it.role != ChatRole.system } else r.messages
             put("input", ProtocolMessages.responses(input, p, cacheSystem))
             val definitions = ProtocolMessages.definitions(r.toolsJson, p.protocol).orEmpty()
-            if (definitions.isNotEmpty() || r.nativeWebSearch || imageGeneration != null) put("tools", buildJsonArray {
-                definitions.forEach { add(it) }
-                if (r.nativeWebSearch) add(buildJsonObject { put("type", "web_search") })
+            if (definitions.isNotEmpty() || r.nativeWebSearch || r.nativeWebFetch || imageGeneration != null) put("tools", buildJsonArray {
+                if (p.chatgptSubscription && definitions.isNotEmpty()) add(buildJsonObject {
+                    put("type", "namespace"); put("name", "simpletavern"); put("description", "SimpleTavern client tools")
+                    put("tools", JsonArray(definitions))
+                }) else definitions.forEach { add(it) }
+                if (r.nativeWebSearch || r.nativeWebFetch) add(buildJsonObject { put("type", "web_search") })
                 imageGeneration?.let { add(JsonObject(it + ("type" to JsonPrimitive("image_generation")))) }
             })
-            wire.filterKeys { it != "image_generation" }.forEach { (key, value) -> put(key, value) }
+            wire.filterKeys { it != "image_generation" && (!p.chatgptSubscription || it !in CHATGPT_UNSUPPORTED) }.forEach { (key, value) -> put(key, value) }
         }
         var completed = false
         var usage: UsageTokens? = null
         val items = sortedMapOf<Int, JsonObject>()
         val partialCalls = mutableMapOf<Int, ToolBuffer>()
         var output = JsonArray(emptyList())
-        exchange(p, endpoint(p, "v1", "responses"), body, beforeExecute) { data ->
+        exchange(if (p.chatgptSubscription) p.copy(streaming = true) else p, endpoint(p, "v1", "responses"), body, beforeExecute) { data ->
             if (data == "[DONE]") return@exchange false
             val obj = objectFrame(data)
             when (obj.text("type")) {
@@ -320,7 +326,7 @@ class LlmClient(
                 "function_call" -> completedCall(item.text("call_id"), item.text("name"), item.text("arguments"))
                 "message", "reasoning", "image_generation_call" -> null
                 "web_search_call" -> {
-                    if (!r.nativeWebSearch) throw StError.Unsupported("undeclared native web search")
+                    if (!r.nativeWebSearch && !r.nativeWebFetch) throw StError.Unsupported("undeclared native web search")
                     if (item.text("status") != "completed") throw StError.Provider("native web search did not complete")
                     null
                 }
@@ -352,10 +358,11 @@ class LlmClient(
             put("messages", ProtocolMessages.anthropic(r.messages, p))
             val definitions = ProtocolMessages.definitions(r.toolsJson, p.protocol).orEmpty()
             if ("tools" in breakpoints && definitions.isEmpty() && !r.nativeWebSearch) throw StError.Validation("tools cache requires tool definitions")
-            if (definitions.isNotEmpty() || r.nativeWebSearch) {
+            if (definitions.isNotEmpty() || r.nativeWebSearch || r.nativeWebFetch) {
                 val tools = buildJsonArray {
                 definitions.forEach { add(it) }
                 if (r.nativeWebSearch) add(buildJsonObject { put("type", "web_search_20250305"); put("name", "web_search"); put("max_uses", 5) })
+                if (r.nativeWebFetch) add(buildJsonObject { put("type", "web_fetch_20250910"); put("name", "web_fetch"); put("max_uses", 5); put("max_content_tokens", 12000); put("citations", buildJsonObject { put("enabled", true) }) })
                 }
                 put("tools", if ("tools" in breakpoints) JsonArray(tools.mapIndexed { index, value ->
                     if (index == tools.lastIndex) JsonObject(value.jsonObject + ("cache_control" to control!!)) else value
@@ -403,15 +410,16 @@ class LlmClient(
                         }
                         "tool_use" -> inputs[index] = StringBuilder()
                         "server_tool_use" -> {
-                            if (!r.nativeWebSearch || block.text("name") != "web_search") throw StError.Unsupported("undeclared Anthropic server tool")
+                            if (!((r.nativeWebSearch && block.text("name") == "web_search") || (r.nativeWebFetch && block.text("name") == "web_fetch"))) throw StError.Unsupported("undeclared Anthropic server tool")
                             serverSearch = true
                             inputs[index] = StringBuilder()
                         }
-                        "web_search_tool_result" -> {
-                            if (!r.nativeWebSearch) throw StError.Unsupported("undeclared Anthropic search result")
+                        "web_search_tool_result", "web_fetch_tool_result" -> {
+                            val fetch = block.text("type") == "web_fetch_tool_result"
+                            if (if (fetch) !r.nativeWebFetch else !r.nativeWebSearch) throw StError.Unsupported("undeclared Anthropic search result")
                             serverSearch = true
-                            if (block.obj("content")?.text("type") == "web_search_tool_result_error") searchFailed = true
-                            else if (block.array("content") == null) throw StError.Provider("invalid Anthropic search result")
+                            if (block.obj("content")?.text("type") in setOf("web_search_tool_result_error", "web_fetch_tool_result_error")) searchFailed = true
+                            else if (if (fetch) block.obj("content") == null else block.array("content") == null) throw StError.Provider("invalid Anthropic search result")
                         }
                         "redacted_thinking" -> Unit
                         else -> throw StError.Unsupported("unsupported Anthropic content block")
@@ -489,7 +497,7 @@ class LlmClient(
             }
             true
         }
-        if (!stopped || finish !in (setOf("end_turn", "stop_sequence", "tool_use") + if (r.nativeWebSearch) setOf("pause_turn") else emptySet()) || closed.size != blocks.size) {
+        if (!stopped || finish !in (setOf("end_turn", "stop_sequence", "tool_use") + if (r.nativeWebSearch || r.nativeWebFetch) setOf("pause_turn") else emptySet()) || closed.size != blocks.size) {
             throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}")
         }
         val output = JsonArray(blocks.values.toList())
@@ -844,3 +852,5 @@ class LlmClient(
     private fun JsonObject.array(key: String) = get(key) as? JsonArray
     fun unsupportedCapability(name: String): Nothing = throw StError.Unsupported("Capability not supported for this protocol: $name")
 }
+
+private val CHATGPT_UNSUPPORTED = setOf("background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs", "top_p", "truncation", "user", "previous_response_id", "prompt_cache_options")

@@ -33,6 +33,7 @@ data class ProviderDeviceLogin(
 data class ProviderOAuthStatus(
     val presetId: String, val providerId: String = "github-copilot", val loggedIn: Boolean,
     val expiresAt: Long? = null, val needsRefresh: Boolean = false, val accountId: String? = null,
+    val subscriptionAuthorized: Boolean? = null,
 )
 
 /** Desktop-compatible GitHub.com device flow. Not a public, supported Copilot API contract. */

@@ -57,6 +57,7 @@ class ProviderModelClient(http: OkHttpClient = OkHttpClient(), private val json:
                 }
             }
             val parsed = exchange(request) { root -> when {
+                provider.chatgptSubscription -> ProviderModelResponses.chatgpt(root)
                 bedrock -> ProviderModelResponses.bedrock(root, kind)
                 vertex -> ProviderModelResponses.vertex(root)
                 else -> ProviderModelResponses.parse(provider.protocol, root)

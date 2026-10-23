@@ -1,6 +1,6 @@
 package com.simpletavern.core.api
 
-import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.*
 
 import android.content.Context
 import android.net.Uri
@@ -487,9 +487,23 @@ class SimpleTavernCore private constructor(
     }
     suspend fun saveAssistant(cfg: AssistantConfig) = writeData { content.saveAssistant(cfg) }
     suspend fun listPresets() = content.listPresets()
-    suspend fun savePreset(p: ModelPreset) = writeData { content.savePreset(p) }
+    suspend fun savePreset(p: ModelPreset) = writeData {
+        val config = NativeJsonInput.parse(p.configJson) as? JsonObject ?: throw StError.Validation("model preset must be an object")
+        val provider = (config["providerId"] as? JsonPrimitive)?.contentOrNull
+        val previous = content.getPreset(p.id)
+        val previousProvider = previous?.configJson?.let { (NativeJsonInput.parse(it) as? JsonObject)?.get("providerId") }
+        if (previous != null && previousProvider != config["providerId"]) providerOAuth.logout(p.id)
+        val selected = if (previous == null && "webSearchSource" !in config &&
+            provider in setOf("deepseek", "anthropic", "openai", "openai-chatgpt", "xai-oauth"))
+            p.copy(configJson = JsonObject(config + ("webSearchSource" to JsonPrimitive("native"))).toString()) else p
+        content.savePreset(selected)
+    }
     suspend fun getPreset(id: String) = content.getPreset(id) ?: throw StError.NotFound(id)
-    suspend fun deletePreset(id: String, expectedUpdatedAt: String) = writeData { content.deletePreset(id, expectedUpdatedAt) }
+    suspend fun deletePreset(id: String, expectedUpdatedAt: String) = writeData {
+        content.deletePreset(id, expectedUpdatedAt)
+        providerOAuth.logout(id)
+        credentials.remove(SubscriptionAuthService.key("openai-chatgpt", id) + ":registration")
+    }
     suspend fun listAssistantConfigs() = content.listAssistantConfigurations()
     suspend fun getAssistantConfig(id: String) = content.getAssistant(id) ?: throw StError.NotFound(id)
     suspend fun saveAssistantConfig(config: AssistantConfig) = writeData { content.saveAssistant(config) }
@@ -730,6 +744,11 @@ class SimpleTavernCore private constructor(
     suspend fun cancelProviderDeviceLogin(loginId: String): ProviderDeviceLogin {
         onProcessStart(); return providerOAuth.cancel(loginId)
     }
+    suspend fun getProviderSubscriptionUsage(presetId: String): ProviderSubscriptionUsage {
+        onProcessStart(); return providerOAuth.usage(presetId)
+    }
+    fun getChatGPTSubscriptionNotice(): String = SubscriptionAuthService.NOTICE
+    /** Host opens authorizeUrl with ACTION_VIEW; pollProviderDeviceLogin observes the native loopback listener. */
     suspend fun getProviderOAuthStatus(presetId: String): ProviderOAuthStatus {
         onProcessStart(); return providerOAuth.status(presetId)
     }
@@ -1276,7 +1295,8 @@ class SimpleTavernCore private constructor(
             val credentialStore = CredentialStore(context)
             val providerOAuth = ProviderOAuthService(contentRepo,
                 CopilotAuthService(contentRepo, credentialStore, dataGate), CodexAuthService(contentRepo, credentialStore, dataGate),
-                VertexAuthService(contentRepo, credentialStore, dataGate, chatRepo))
+                VertexAuthService(contentRepo, credentialStore, dataGate, chatRepo),
+                SubscriptionAuthService(contentRepo, credentialStore, dataGate))
             val providerResolver = ProviderResolver(contentRepo, credentialStore, providerOAuth)
             val geminiCachePrices = GeminiCachePriceStore(db)
             val geminiCacheTasks = GeminiCacheTaskService(chatRepo, providerResolver, taskStore, dataGate, scope, geminiCachePrices,

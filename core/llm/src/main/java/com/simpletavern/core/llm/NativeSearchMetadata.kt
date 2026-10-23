@@ -24,7 +24,7 @@ internal object NativeSearchMetadata {
             val item = element as? JsonObject ?: return@mapNotNull null
             when ((item["type"] as? JsonPrimitive)?.content) {
                 "server_tool_use" -> item
-                "web_search_tool_result" -> JsonObject(item + ("content" to when (val content = item["content"]) {
+                "web_search_tool_result", "web_fetch_tool_result" -> JsonObject(item + ("content" to when (val content = item["content"]) {
                     is JsonArray -> JsonArray(content.map { result -> if (result is JsonObject)
                         JsonObject(result.filterKeys { it in setOf("type", "title", "url", "page_age") }) else result })
                     else -> content ?: JsonNull

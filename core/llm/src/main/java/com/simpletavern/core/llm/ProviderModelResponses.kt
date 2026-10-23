@@ -91,6 +91,15 @@ internal object ProviderModelResponses {
         return Parsed(models, next)
     }
 
+    fun chatgpt(root: JsonObject): Parsed {
+        val rows = root["models"] as? JsonArray ?: invalid()
+        return Parsed(rows.mapNotNull { value ->
+            val row = value as? JsonObject ?: invalid()
+            if (optionalText(row, "visibility") != "list") null else ProviderModelInfo(
+                id = requiredText(row, "slug", MAX_MODEL_ID_LENGTH), name = optionalText(row, "display_name"))
+        })
+    }
+
     private fun parseOpenAi(root: JsonObject): Parsed {
         val rows = requiredArray(root, "data")
         val models = rows.map { value ->

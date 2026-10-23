@@ -30,6 +30,19 @@ internal object ProviderConnectionSettings {
         (config.text("authStyle") == "google_service_account" || config["googleVertex"] is JsonObject)
 
     fun select(config: JsonObject, model: String): Selection {
+        if (config.text("providerId") in setOf("openai-chatgpt", "xai-oauth")) {
+            val chatgpt = config.text("providerId") == "openai-chatgpt"
+            val base = if (chatgpt) "https://api.openai.com/v1" else "https://api.x.ai/v1"
+            if (config.text("baseUrl")?.trimEnd('/')?.let { it != base } == true || config.text("generationPath") != null ||
+                config.text("protocolVariant") !in setOf(null, if (chatgpt) "chatgpt_subscription" else null) || config["protocolPaths"] !in setOf(null, JsonNull, JsonObject(emptyMap())))
+                throw StError.Validation("subscription credentials require the fixed official API root and paths")
+            if (config.text("authStyle") !in setOf(null, "oauth_pkce", "oauth_device", "bearer"))
+                throw StError.Validation("subscription preset requires OAuth")
+            val protocol = LlmProtocol.OPENAI_RESPONSES
+            if (config.text("protocol") !in setOf(null, "auto", "openai_responses"))
+                throw StError.Unsupported("unsupported subscription protocol")
+            return Selection(protocol, base, if (chatgpt) "oauth_pkce" else "oauth_device", null, config.text("providerId"))
+        }
         if (isVertexIam(config)) return selectVertex(config, model)
         if (config.text("providerId") == "google-vertex" && config.text("authStyle") == "query_key")
             return selectVertexExpress(config, model)

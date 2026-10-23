@@ -25,7 +25,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okio.Buffer
 
 /** In-memory authorization for one live generation/member. Never serialize its transport closure. */
-data class GenerationSearchPlan(val native: Boolean = false, val session: WebSearchSession? = null)
+data class GenerationSearchPlan(val native: Boolean = false, val session: WebSearchSession? = null,
+    val searchEnabled: Boolean = true, val fetchEnabled: Boolean = true, val deepSeek: Boolean = false)
 
 class WebSearchSession internal constructor(val provider: String, private val run: suspend (String, SearchCallContext) -> WebSearchResult) {
     val identity: String = UUID.randomUUID().toString()

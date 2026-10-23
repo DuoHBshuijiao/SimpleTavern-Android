@@ -47,7 +47,7 @@ class ConversationService(
     private val tasks: TaskStore,
     private val usage: UsageStore,
     private val scope: CoroutineScope,
-    private val resolveSearch: suspend (ChatSession, LlmProtocol, WebSearchOptions) -> GenerationSearchPlan = { _, _, options ->
+    private val resolveSearch: suspend (ChatSession, ProviderConfig, WebSearchOptions) -> GenerationSearchPlan = { _, _, options ->
         if (options.enabled) throw StError.Unsupported("web search resolver is not installed")
         GenerationSearchPlan()
     },
@@ -567,7 +567,7 @@ class ConversationService(
                     extra = providerOverride.extra + (member?.reasoningEffort?.let { mapOf("reasoning_effort" to it) } ?: emptyMap()),
                 ))
                 activeProvider = provider
-                val searchPlan = resolveSearch(session, provider.protocol, webSearch)
+                val searchPlan = resolveSearch(session, provider, webSearch)
                 val providerTools = provider.toolsJson?.let { Jsonx.json.parseToJsonElement(it) as? JsonArray
                     ?: throw StError.Validation("tools must be an array") } ?: JsonArray(emptyList())
                 val configuredTools = if (assistantPlan != null) {
@@ -582,7 +582,8 @@ class ConversationService(
                 val hasSearchTool = configuredTools.any { (it as? JsonObject)?.get("function")?.let { fn ->
                     (fn as? JsonObject)?.get("name") == JsonPrimitive("web_search") } == true }
                 if (hasSearchTool && searchPlan.session == null) throw StError.Validation("independent search tool requires this request's explicit independent search permission")
-                val requestTools = if (searchPlan.session != null) JsonArray(configuredTools.filterNot { spec ->
+                val deepSeekWeb = if (searchPlan.deepSeek) com.simpletavern.core.llm.DeepSeekWebClient(provider, searchPlan.searchEnabled, searchPlan.fetchEnabled) else null
+                val requestTools = if (deepSeekWeb != null) JsonArray(configuredTools + deepSeekWeb.definitions).toString() else if (searchPlan.session != null) JsonArray(configuredTools.filterNot { spec ->
                     (spec as? JsonObject)?.get("function")?.let { (it as? JsonObject)?.get("name") } == JsonPrimitive("web_search")
                 } + WebSearchService.TOOL).toString() else configuredTools.takeIf { it.isNotEmpty() }?.toString()
                 val messages = prepareAttachments(assistantPlan?.messages ?: contextBuilder.build(session,
@@ -633,7 +634,8 @@ class ConversationService(
                     var receivedDone = false
                     var continuation = false
                     val req = LlmRequest(requestId, provider.protocol, provider.model, messages.toList(),
-                        provider.temperature, provider.topP, requestTools, provider.extra, nativeWebSearch = searchPlan.native, taskId = taskId)
+                        provider.temperature, provider.topP, requestTools, provider.extra, nativeWebSearch = searchPlan.native && !searchPlan.deepSeek && searchPlan.searchEnabled,
+                        nativeWebFetch = searchPlan.native && !searchPlan.deepSeek && searchPlan.fetchEnabled, taskId = taskId)
                     usage.executeTokenRequest(requestId, chatId, provider.providerId, provider.model,
                         UsageRecordContext(provider.protocol.name, startedAt = meta.startedAt, requestedModel = provider.model,
                             purpose = "chat_generation", scope = "chat:$chatId", sourceNamespace = session.sourceNamespace,
@@ -694,6 +696,7 @@ class ConversationService(
                         flow.tryEmit(call)
                         val result = if (assistantPlan?.maxToolsPerTurn?.let { callIndex >= it } == true)
                             com.simpletavern.core.tools.ToolResult("{\"ok\":false,\"code\":\"LIMIT_EXCEEDED\",\"message\":\"maxToolsPerTurn exceeded; not executed\"}", "{\"skipped\":true}")
+                        else if (deepSeekWeb?.handles(call.name) == true) com.simpletavern.core.tools.ToolResult(deepSeekWeb.execute(call.name, call.argumentsJson), "{\"provider\":\"deepseek\"}")
                         else tools.executeBound(chatId, snapshot.sandboxId, taskId, call.callId, call.name, call.argumentsJson,
                             webSearch = searchPlan.session, assistantTools = boundTools)
                         currentCoroutineContext().ensureActive()

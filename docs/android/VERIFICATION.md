@@ -1,5 +1,12 @@
 # 验证记录
 
+## 2026-10-22 原生联网与订阅首轮
+
+- 最终执行 `gradlew.bat :app:assembleDebug --offline --no-daemon --console=plain`，退出0，BUILD SUCCESSFUL in 25s；受影响原生 API、LLM、会话模块完成编译并打包诊断 Debug APK。
+- 核对两端52条供应商 overlay 的有效 JSON 与重复标识、SIWC/Grok 协议/固定端点、联网高级配置与旧来源行为，Git 差异空白检查通过。
+- 未新增测试框架、断言或门禁；未执行真实 ChatGPT Plus/Pro/Grok 登录、订阅扣额、供应商联网请求或设备回环/后台验收。当前额度服务返回 unsupported 与管理链接，不是已实现数字额度查询。
+- 当前产物为 `app/build/outputs/apk/debug/app-debug.apk`，仍是诊断宿主，不代表完整产品前端完成。接口与剩余项见 [CORE_API.md](CORE_API.md)、[NATIVE_WEB_SUBSCRIPTION_PLAN.md](NATIVE_WEB_SUBSCRIPTION_PLAN.md)。
+
 ## 既有构建证据（2026-10-11）
 
 整理前的最新记录：`:app:assembleDebug assembleBackendRelease --offline --no-daemon --console=plain` 最终 exit 0，BUILD SUCCESSFUL in 1m 29s；673 tasks / 44 executed / 629 up-to-date。

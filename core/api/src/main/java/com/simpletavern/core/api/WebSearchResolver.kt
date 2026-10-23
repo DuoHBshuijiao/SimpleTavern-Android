@@ -129,8 +129,17 @@ class WebSearchResolver(private val db: AppDatabase, private val credentials: Cr
         val secret = credentials.getSecret(connection.credentialId) ?: throw StError.Search("web_search_not_configured", "selected search credential is missing")
         service.prepare(config.provider, connection, secret, scope(assistantId))
     } }
-    suspend fun forGeneration(chat: ChatSession, protocol: LlmProtocol, options: WebSearchOptions): GenerationSearchPlan = withContext(Dispatchers.IO) { db.withTransaction {
+    suspend fun forGeneration(chat: ChatSession, provider: com.simpletavern.core.llm.ProviderConfig, options: WebSearchOptions): GenerationSearchPlan = withContext(Dispatchers.IO) { db.withTransaction {
         if (!options.enabled) return@withTransaction GenerationSearchPlan()
+        val presetConfig = provider.presetId?.let { db.config().presetConfigJson(it) }?.let {
+            NativeJsonInput.parse(it) as? JsonObject ?: throw StError.Validation("invalid preset web configuration")
+        }
+        val source = options.source ?: (presetConfig?.get("webSearchSource") as? JsonPrimitive)?.contentOrNull
+        val searchEnabled = options.searchEnabled && (presetConfig?.get("webSearchSearchEnabled") as? JsonPrimitive)?.booleanOrNull != false
+        val fetchEnabled = options.fetchEnabled && (presetConfig?.get("webSearchFetchEnabled") as? JsonPrimitive)?.booleanOrNull != false
+        if (!searchEnabled && !fetchEnabled) return@withTransaction GenerationSearchPlan()
+        val protocol = provider.protocol
+        if (source !in setOf(null, "native", "independent")) throw StError.Validation("invalid web capability source")
         val assistantId = options.assistantId?.also { id ->
             scope(id)
             if (db.config().assistantSettingsBytes(id) == null) throw StError.NotFound("selected search assistant missing")
@@ -145,8 +154,16 @@ class WebSearchResolver(private val db: AppDatabase, private val credentials: Cr
             ?: throw StError.Validation("chat search overrides are invalid") }
         val mode = options.geminiSearch ?: (chatParams?.get("geminiSearch") as? JsonPrimitive)?.contentOrNull ?: config.geminiSearch
         if (mode !in setOf("native", "independent")) throw StError.Validation("invalid Gemini search mode")
-        val hosted = protocol in setOf(LlmProtocol.OPENAI_RESPONSES, LlmProtocol.ANTHROPIC_MESSAGES) ||
-            protocol == LlmProtocol.GEMINI_GENERATE_CONTENT && mode == "native"
-        if (hosted) GenerationSearchPlan(native = true) else GenerationSearchPlan(session = prepare(assistantId))
+        val deepSeek = java.net.URI(provider.baseUrl).host == "api.deepseek.com"
+        val hosted = source != "independent" && (deepSeek && source == "native" || protocol in setOf(LlmProtocol.OPENAI_RESPONSES, LlmProtocol.ANTHROPIC_MESSAGES) ||
+            protocol == LlmProtocol.GEMINI_GENERATE_CONTENT && mode == "native")
+        if (source == "native" && !hosted) throw StError.Unsupported("selected provider has no native web adapter")
+        if (hosted && !deepSeek && protocol == LlmProtocol.OPENAI_RESPONSES)
+            return@withTransaction GenerationSearchPlan(native = searchEnabled, searchEnabled = searchEnabled, fetchEnabled = searchEnabled)
+        if (hosted) GenerationSearchPlan(native = true, searchEnabled = searchEnabled,
+            fetchEnabled = fetchEnabled, deepSeek = deepSeek) else {
+            if (!searchEnabled) throw StError.Unsupported("independent fetch-only mode is not supported")
+            GenerationSearchPlan(session = prepare(assistantId))
+        }
     } }
 }

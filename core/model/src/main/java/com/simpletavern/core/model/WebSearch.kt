@@ -32,7 +32,8 @@ data class WebSearchStatus(val version: Int = 1, val configurationVersion: WebSe
     val independentModes: List<String> = listOf("tavily", "bocha", "brave"),
     val nativeModes: List<String> = listOf("openai_responses", "anthropic_messages", "gemini_generate_content"))
 @Serializable
-data class WebSearchOptions(val enabled: Boolean = false, val geminiSearch: String? = null, val assistantId: String? = null)
+data class WebSearchOptions(val enabled: Boolean = false, val geminiSearch: String? = null, val assistantId: String? = null,
+    val source: String? = null, val searchEnabled: Boolean = true, val fetchEnabled: Boolean = true)
 @Serializable
 data class WebSearchHit(val title: String, val url: String, val snippet: String,
     val publishedAt: String? = null, val truncated: Boolean = false)

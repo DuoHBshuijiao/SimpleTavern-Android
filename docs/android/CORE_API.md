@@ -1,5 +1,19 @@
 # CORE_API — 前端应调用的业务接口
 
+## 2026-10-22 原生联网与订阅增补
+
+- 计划与边界：[NATIVE_WEB_SUBSCRIPTION_PLAN.md](NATIVE_WEB_SUBSCRIPTION_PLAN.md)。当前交付业务核心及诊断宿主，完整产品前端仍待开发。
+- `openai-chatgpt` 独立于旧 Codex 兼容预设：`startProviderBrowserLogin(presetId)` 返回系统浏览器授权 URL；应用监听 `127.0.0.1` 回调并完成动态注册、PKCE/state/nonce、RS256/ES256 ID token 校验。`pollProviderDeviceLogin` 查询完成状态，`cancelProviderDeviceLogin` 取消。客户端必须自行打开系统浏览器并展示授权状态。
+- 稳定安装 host ID 与各预设注册分开保存，先保存签发 client ID 再兑换 code，刷新串行。`getProviderOAuthStatus` 增加 `subscriptionAuthorized`；仅实际授予订阅权限才可推理。账号不同应新增预设。退出删除令牌，保留非秘密 client 注册。
+- `xai-oauth` 通过 `startProviderDeviceLogin` 设备码兼容登录；端点来自固定官方 OIDC discovery，默认公开 Grok 客户端 ID，可在 `providerParams.client_id` 覆盖。两端均使用 Responses 协议和固定官方 API 根；403/429 等权限/额度响应不自动回退 API Key。
+- `getProviderSubscriptionUsage(presetId)` 返回 provider/state/plan/checkedAt/windows/manageUrl/errorCode。窗口字段为 id/label/windowMinutes/usedPercent/remainingPercent/resetsAt。尚未核实新机制额度查询接口，当前返回 unsupported 和空窗口；未登录为 not_logged_in。ChatGPT 官方管理入口 `https://chatgpt.com/settings/usage`；不伪造5小时或周额度。
+- `getChatGPTSubscriptionNotice()` 返回固定提示：通过 OpenAI 官方提供的 Sign in with ChatGPT，使用你的 ChatGPT 订阅额度。本功能目前处于预览阶段，OpenAI 可能随时调整可用范围、使用限制或接入方式。
+- ChatGPT 从当前账号公开 `/v1/models` 目录获取可见模型；Responses 请求固定 store=false/stream=true，本地聚合关闭流式的产品请求；过滤预览不支持字段，function tools 使用 namespace，等待 response.completed 后才视为成功。
+- `WebSearchOptions` 增加 source（null/native/independent）、searchEnabled、fetchEnabled。预设 configJson 对应 webSearchSource/webSearchSearchEnabled/webSearchFetchEnabled；来源优先使用本次选项，再使用预设。旧预设无来源字段保持历史路由，新建受支持供应商预设默认 native。
+- 主聊天、群聊、助手共用联网执行链。DeepSeek 官方 HTTPS 连接使用 Search/Fetch API 与当前预设密钥，结果受2MiB读取、文本截断和调用预算约束；Claude 支持 server web_fetch、pause_turn 与混合客户端工具续轮；GPT 搜索/打开网页联动。独立搜索不提供抓取能力，失败不自动切换来源。
+- 后续产品 UI 应提供：准确的官方登录名称/预览提示、首次授权确认、模型/输入区订阅状态和管理用量入口、真实额度或无法查询状态、联网总开关和高级选项。当前未声称这些完整屏幕已在 Android 实现。
+
+
 2026-10-10 库交付：运行 `./gradlew assembleBackendRelease --offline`（Windows用 `gradlew.bat`），生成十个正式Release AAR和现有unsigned诊断宿主。当前构建基线为JDK17、AGP8.7.3、Kotlin2.0.21、SDK35/min26；离线构建需先有对应Gradle/SDK依赖缓存，首次缺失可沿现有仓库下载，不自动升级。
 
 库位于 `core/{model,data,import,conversation,memory,llm,tools,api}/build/outputs/aar/<模块名>-release.aar` 和 `runtime/{sandbox,host}/build/outputs/aar/<模块名>-release.aar`。这是分别打包的模块，不是fat AAR；单个api-release.aar不含其它模块/第三方依赖，本批未配置Maven发布/POM。推荐未来前端沿当前源码子工程接入：

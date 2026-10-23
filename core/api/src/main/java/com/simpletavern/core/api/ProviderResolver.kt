@@ -108,7 +108,7 @@ internal class ProviderResolver(private val content: ContentRepository, private 
         val provider = ProviderConfig(r.preview.credentialId, r.preview.protocol, login?.baseUrl ?: r.preview.baseUrl, if (aws == null) key else "",
             r.preview.model, if (cacheOperation) null else r.temperature, if (cacheOperation) null else r.topP,
             extra = extra, reportedCostCurrency = costCurrency, httpOptions = options, unversionedRoot = login != null,
-            codexBackend = login?.codexBackend == true, streaming = GenerationParameters.streaming(r.params), presetId = r.preview.presetId,
+            chatgptSubscription = login?.chatgptSubscription == true, codexBackend = login?.codexBackend == true, streaming = GenerationParameters.streaming(r.params), presetId = r.preview.presetId,
             bedrockBackend = r.preview.catalogProviderId == "amazon-bedrock",
             awsCredentials = aws,
             generationPath = generationPath(r.config),
@@ -255,10 +255,11 @@ internal class ProviderResolver(private val content: ContentRepository, private 
 
     companion object {
     private fun managedAuthentication(providerId: String?, authStyle: String?) =
-        providerId in setOf("github-copilot", "openai-codex") || authStyle == "google_service_account"
+        providerId in setOf("github-copilot", "openai-codex", "openai-chatgpt", "xai-oauth") || authStyle == "google_service_account"
     private fun managedCredentialId(providerId: String?, presetId: String): String = when (providerId) {
         "github-copilot" -> CopilotAuthService.credentialId(presetId)
         "openai-codex" -> CodexAuthService.credentialId(presetId)
+        "openai-chatgpt", "xai-oauth" -> SubscriptionAuthService.key(providerId, presetId)
         "google-vertex" -> VertexAuthService.credentialId(presetId)
         else -> throw StError.Unsupported("provider has no managed authentication adapter")
     }
@@ -288,7 +289,7 @@ internal class ProviderResolver(private val content: ContentRepository, private 
         if (field !in setOf("max_tokens", "max_completion_tokens")) throw StError.Validation("unsupported token limit field")
         val provider = ProviderConfig(credentialId, protocol, base, if (aws == null) secret else "", model, temperature = 0.2,
             extra = mapOf("max_tokens" to maxOutputTokens.toString(), "max_token_field" to field), reportedCostCurrency = currency,
-            httpOptions = options, unversionedRoot = login != null, codexBackend = login?.codexBackend == true,
+            httpOptions = options, unversionedRoot = login != null, chatgptSubscription = login?.chatgptSubscription == true, codexBackend = login?.codexBackend == true,
             bedrockBackend = connection.catalogProviderId == "amazon-bedrock",
             awsCredentials = aws,
             generationPath = generationPath(config),

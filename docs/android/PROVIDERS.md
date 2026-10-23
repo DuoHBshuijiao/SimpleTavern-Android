@@ -584,3 +584,6 @@ useResponseApi 选择原 Responses 或 Chat Completions。实际 responsesPath/c
 空路径明确表示使用配置根，不自动补 v1；其他路径须以斜线开头，既有URI解析保留同一origin，不用 URI.resolve 换主机。当前只接受无query/fragment的路径，含这些参数的来源自定义路径尚不支持；不静默去掉或重发。原无此字段行为不变。停止/取消、原账目、缓存和预处理继续复用原链，预处理也采用对应生成路径。
 
 两个 Luna 分别编码小型源映射与路径适配，主代理接导入/解析并核对默认值、完整替代及凭据选择。最初普通离线 app:assembleDebug 成功1分37秒，路径deferred补正后再次成功24秒；随后两个 Luna 实际编码普通 provider 与 Google 分支，主代理接现有 Vertex/Express 路由和旧配置拒绝，最终普通离线构建成功42秒、退出0（230 tasks，12 executed/218 up-to-date，import/api Kotlin 实际重编）。仅编译/静态证据，详情见 [VERIFICATION.md](VERIFICATION.md)。未执行用户包、数据库导入、模型、账户或设备。无新依赖、表、任务引擎/校验框架、前端、哈希、冒烟或新增单测；不是所有来源变体或整体后端已验收。
+# 2026-10-22 订阅和原生联网增补
+
+新增 `openai-chatgpt`（OpenAI 官方 SIWC 预览）及 `xai-oauth`（Grok 公开客户端设备码兼容）；旧 Codex 单独保留。配置、授权方法、模型、联网选项和额度限制以 [CORE_API.md](CORE_API.md) 增补为准，计划见 [NATIVE_WEB_SUBSCRIPTION_PLAN.md](NATIVE_WEB_SUBSCRIPTION_PLAN.md)。Grok 兼容流程不宣称所有套餐均可用；真实账号和额度尚未验收。
