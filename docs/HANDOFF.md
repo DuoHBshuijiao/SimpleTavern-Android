@@ -36,6 +36,8 @@
 
 ## 5. 前端现状
 
+> 2026-10-29 前端暂停，等三维场景技术选型定下来再继续。现状、作者反馈、已知问题和选型备选见 [FRONTEND_STATUS.md](FRONTEND_STATUS.md)。
+
 `app` 已接入 Compose（BOM 2024.09.00 + activity-compose + lifecycle-compose），`MainActivity` 是启动入口。原来的诊断宿主 `DebugHostActivity` 不再出现在桌面图标里，可用 `adb shell am start -n com.simpletavern.app.debug/com.simpletavern.app.DebugHostActivity` 打开。
 
 首页牌架、牌组、设置的洗牌翻牌已能编译（2026-10-29 `:app:assembleDebug` 通过），还没在真机上验收。各场景和转场帧可以在 JVM 上截图检查，见下方"截图检查"。
