@@ -21,19 +21,25 @@
     <application
         android:name=".StApplication"
         android:allowBackup="false"
-        android:label="SimpleTavern Core"
+        android:label="SimpleTavern"
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:usesCleartextTraffic="false">
         <activity
-            android:name=".DebugHostActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Diagnostic host, reachable by component name (adb shell am start -n ...). -->
+        <activity
+            android:name=".DebugHostActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
         <!-- Debug-only diagnostic receiver; stripped intent in release by not registering UI. -->
         <receiver
             android:name=".DebugCommandReceiver"
