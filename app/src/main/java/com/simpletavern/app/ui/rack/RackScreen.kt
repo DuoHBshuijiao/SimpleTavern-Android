@@ -1,11 +1,15 @@
 package com.simpletavern.app.ui.rack
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +34,8 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -158,6 +164,7 @@ class RackCamera {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RackScreen(
     state: RackUiState,
@@ -169,10 +176,15 @@ fun RackScreen(
     onNewCharacter: () -> Unit,
     onSettings: () -> Unit,
     onPivot: (Offset) -> Unit = {},
+    onEditCharacter: (String) -> Unit = {},
+    onDelete: (String) -> Unit = {},
     emptyExtras: @Composable () -> Unit = {},
 ) {
     val t = LocalTable.current
     val shelf = remember(state.columns) { Shelf(state.columns) }
+    val drawer = remember { HiddenDrawer() }
+    // Once a discarded session has left the data, the sessions under it close the gap one by one.
+    LaunchedEffect(shelf) { drawer.closeGap(shelf) }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
@@ -194,7 +206,8 @@ fun RackScreen(
     var stageTop by remember { mutableFloatStateOf(0f) }
 
     val tap: (Int, Int) -> Unit = { i, j ->
-        if (i == fi && j == fj) {
+        if (drawer.armed != null) scope.launch { drawer.cancel() }
+        else if (i == fi && j == fj) {
             when (val s = shelf.slot(i, j)) {
                 is Slot.Session -> onOpen(s.session)
                 is Slot.NewSession -> onNewSession(s.column.characterId)
@@ -213,7 +226,8 @@ fun RackScreen(
                     stageTop = at.y
                     onPivot(at + Offset(it.size.width / 2f, it.size.height * RackGeometry.PIVOT_Y))
                 }
-                .rackDrag(camera, shelf, onBump = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }),
+                .rackDrag(camera, shelf, onStart = { if (drawer.armed != null) scope.launch { drawer.cancel() } },
+                    onBump = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }),
         ) {
             val pivot = Offset(constraints.maxWidth / 2f, constraints.maxHeight * RackGeometry.PIVOT_Y)
             val origin = TransformOrigin(0.5f, RackGeometry.PIVOT_Y)
@@ -247,29 +261,63 @@ fun RackScreen(
                         for (j in (wy - 5)..(wy + 5)) {
                             if (j !in 0 until shelf.rows) continue
                             val slot = shelf.slot(i, j)
-                            val hidden = slot is Slot.Session && slot.session.id == hiddenChatId
-                            key(i, j) {
+                            val sessionId = (slot as? Slot.Session)?.session?.id
+                            val hidden = sessionId != null && sessionId == hiddenChatId
+                            val armedHere = sessionId != null && sessionId == drawer.armed
+                            if (armedHere) key("drawer") {
+                                DrawerWell(
+                                    open = { drawer.open.value },
+                                    modifier = Modifier
+                                        .size(RackGeometry.PlateW, RackGeometry.PlateH)
+                                        .zIndex(0.5f)
+                                        .graphicsLayer {
+                                            translationX = pivot.x - plateW / 2 + (i - camera.x.value) * stepX
+                                            translationY = pivot.y - plateH / 2 + (j - camera.y.value) * stepY
+                                        },
+                                )
+                            }
+                            key(sessionId ?: "$i,$j") {
                                 Plate(
                                     slot = slot,
                                     focused = { i == fi && j == fj },
                                     modifier = Modifier
                                         .size(RackGeometry.PlateW, RackGeometry.PlateH)
                                         .zIndex(if (i == fi && j == fj) 2f else 1f)
+                                        .zIndex(if (armedHere) 3f else 0f)
                                         .graphicsLayer {
                                             val gx = i - camera.x.value
-                                            val gy = j - camera.y.value
+                                            val gy = j - camera.y.value + (sessionId?.let { drawer.shiftOf(it) } ?: 0f)
                                             val k = RackGeometry.lift(gx, gy)
                                             translationX = pivot.x - plateW / 2 + gx * stepX
                                             translationY = pivot.y - plateH / 2 + gy * stepY
-                                            scaleX = 1f + RackGeometry.FOCUS_LIFT * k
-                                            scaleY = 1f + RackGeometry.FOCUS_LIFT * k
-                                            shadowElevation = 14.dp.toPx() * k
+                                            var sc = 1f + RackGeometry.FOCUS_LIFT * k
+                                            var fade = 1f
+                                            if (armedHere) {
+                                                // Lifted off its slot and held above the open drawer; on discard it drops in.
+                                                val o = drawer.open.value
+                                                val sink = drawer.sink.value
+                                                translationY -= stepY * 0.46f * o * (1f - sink)
+                                                sc *= (1f + 0.1f * o) * (1f - 0.5f * sink)
+                                                fade = 1f - sink
+                                            }
+                                            scaleX = sc
+                                            scaleY = sc
+                                            shadowElevation = (14.dp.toPx() * k + if (armedHere) 18.dp.toPx() * drawer.open.value else 0f) * fade
                                             shape = RoundedCornerShape(10.dp)
                                             val far = hypot(gx, gy)
-                                            alpha = if (hidden && away() > 0.001f) 0f
-                                            else ((4.2f - far) / 2.2f).coerceIn(0f, 1f) * (0.78f + 0.22f * k)
+                                            alpha = if (hidden && away() > 0.001f || sessionId != null && sessionId in drawer.gone) 0f
+                                            else ((4.2f - far) / 2.2f).coerceIn(0f, 1f) * (0.78f + 0.22f * k) * fade
                                         }
-                                        .clickable(remember { MutableInteractionSource() }, indication = null) { tap(i, j) },
+                                        .combinedClickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                            onLongClick = if (sessionId != null) ({
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                scope.launch { camera.glideTo(i, j) }
+                                                scope.launch { drawer.arm(sessionId) }
+                                            }) else null,
+                                            onClick = { tap(i, j) },
+                                        ),
                                 )
                             }
                         }
@@ -306,7 +354,21 @@ fun RackScreen(
                 .onGloballyPositioned { hudTop = it.positionInRoot().y }
                 .padding(start = 24.dp, end = 24.dp, bottom = 18.dp),
         ) {
-            Hud(focused, fi, state.columns.isEmpty())
+            val armedSession = drawer.armed?.let { id -> state.columns.firstNotNullOfOrNull { c -> c.sessions.firstOrNull { it.id == id } } }
+            if (armedSession != null) {
+                DiscardPrompt(
+                    title = armedSession.title,
+                    onConfirm = {
+                        scope.launch {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            drawer.discard(armedSession.id, shelf) { onDelete(armedSession.id) }
+                        }
+                    },
+                    onCancel = { scope.launch { drawer.cancel() } },
+                )
+            } else {
+                Hud(focused, fi, state.columns.isEmpty(), onEditCharacter)
+            }
             if (state.columns.isEmpty()) emptyExtras()
             state.notice?.let {
                 BasicText(it, style = Type.sub.copy(color = t.red), maxLines = 2, modifier = Modifier.padding(top = 8.dp))
@@ -321,7 +383,7 @@ fun RackScreen(
 }
 
 /** Drag along the two tipped axes. The first real movement picks one axis; flicks carry up to two plates. */
-private fun Modifier.rackDrag(camera: RackCamera, shelf: Shelf, onBump: () -> Unit): Modifier = pointerInput(shelf) {
+private fun Modifier.rackDrag(camera: RackCamera, shelf: Shelf, onStart: () -> Unit, onBump: () -> Unit): Modifier = pointerInput(shelf) {
     val r = RackGeometry.TURN * PI.toFloat() / 180f
     val ct = cos(RackGeometry.TILT * PI.toFloat() / 180f)
     val stepX = RackGeometry.StepX.toPx()
@@ -347,6 +409,7 @@ private fun Modifier.rackDrag(camera: RackCamera, shelf: Shelf, onBump: () -> Un
         val maxY = (shelf.rows - 1).toFloat()
         detectDragGestures(
             onDragStart = {
+                onStart()
                 lock = null; total = Offset.Zero; bumped = false; tracker.resetTracking()
                 start = Offset(camera.x.value, camera.y.value)
                 launch { camera.x.stop() }; launch { camera.y.stop() }
@@ -402,7 +465,7 @@ private fun RackTop(position: String?, onSettings: () -> Unit, modifier: Modifie
 }
 
 @Composable
-private fun Hud(slot: Slot, column: Int, emptyShelf: Boolean) {
+private fun Hud(slot: Slot, column: Int, emptyShelf: Boolean, onEditCharacter: (String) -> Unit) {
     val t = LocalTable.current
     val (tag, name, line, dot) = when (slot) {
         is Slot.Session -> Quad("No.%02d ♠".format(column + 1), slot.column.name, slot.session.title, glowOf(slot.session.recency))
@@ -430,15 +493,17 @@ private fun Hud(slot: Slot, column: Int, emptyShelf: Boolean) {
             .background(t.ink)
             .padding(horizontal = 10.dp, vertical = 5.dp),
     )
-    BasicText(
-        name.ifBlank { " " },
-        style = Type.title.copy(color = t.text, fontSize = 32.sp),
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(top = 8.dp).graphicsLayer {
+    val characterId = (slot as? Slot.Session)?.column?.characterId ?: (slot as? Slot.NewSession)?.column?.characterId
+    Row(
+        Modifier.padding(top = 8.dp).graphicsLayer {
             alpha = rise.value.coerceIn(0f, 1f); translationY = (1f - rise.value) * 10.dp.toPx()
-        },
-    )
+        }.then(if (characterId != null) Modifier.clickable { onEditCharacter(characterId) } else Modifier),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        BasicText(name.ifBlank { " " }, style = Type.title.copy(color = t.text, fontSize = 32.sp), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false))
+        if (characterId != null) BasicText("  ✎", style = Type.sub.copy(color = t.goldDeep, fontSize = 15.sp), modifier = Modifier.padding(bottom = 6.dp))
+    }
     if (meta != null) {
         BasicText("$meta 局", style = Type.ornament.copy(color = t.textSoft, letterSpacing = 0.18.em), modifier = Modifier.padding(top = 2.dp))
     }
@@ -566,4 +631,91 @@ fun vertical(title: String, max: Int = 6): String {
     val cps = title.trim().codePoints().toArray().map { String(Character.toChars(it)) }.filter { it.isNotBlank() }
     val shown = if (cps.size > max) cps.take(max - 1) + "︙" else cps
     return shown.joinToString("\n")
+}
+
+/**
+ * Long-pressing a session opens a hidden drawer in the shelf under it: the plate lifts off and hangs over a dark
+ * well. Discarding drops it in, the drawer shuts, and the sessions below slide up into the gap.
+ */
+@Stable
+private class HiddenDrawer {
+    var armed by mutableStateOf<String?>(null)
+    val open = Animatable(0f)
+    val sink = Animatable(0f)
+    val gone = mutableStateListOf<String>()
+    private val shifts = mutableStateMapOf<String, Animatable<Float, AnimationVector1D>>()
+    private var pendingGap: Pair<String, List<String>>? = null
+
+    fun shiftOf(id: String): Float = shifts[id]?.value ?: 0f
+
+    suspend fun arm(id: String) {
+        if (armed != null && armed != id) cancel()
+        armed = id
+        sink.snapTo(0f)
+        open.animateTo(1f, spring(dampingRatio = 0.7f, stiffness = 260f))
+    }
+
+    suspend fun cancel() {
+        open.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 400f))
+        armed = null
+    }
+
+    suspend fun discard(id: String, shelf: Shelf, delete: () -> Unit) {
+        val below = shelf.columns.firstOrNull { c -> c.sessions.any { it.id == id } }
+            ?.sessions?.map { it.id }?.dropWhile { it != id }?.drop(1).orEmpty()
+        sink.animateTo(1f, tween(460))
+        gone += id
+        pendingGap = id to below
+        delete()
+        open.animateTo(0f, tween(220))
+        armed = null
+        sink.snapTo(0f)
+    }
+
+    suspend fun closeGap(shelf: Shelf) {
+        val (id, below) = pendingGap ?: return
+        if (shelf.locate(id) != null) return
+        pendingGap = null
+        kotlinx.coroutines.coroutineScope {
+            below.forEachIndexed { n, b ->
+                val a = Animatable(1f)
+                shifts[b] = a
+                launch {
+                    kotlinx.coroutines.delay(70L * n)
+                    a.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 220f))
+                    shifts.remove(b)
+                }
+            }
+        }
+        gone.remove(id)
+    }
+}
+
+/** The well under a lifted plate: a recess lined in dark cloth, opening from its middle. */
+@Composable
+private fun DrawerWell(open: () -> Float, modifier: Modifier) {
+    val t = LocalTable.current
+    Box(
+        modifier
+            .graphicsLayer { scaleY = open().coerceIn(0f, 1f); alpha = open().coerceIn(0f, 1f) }
+            .clip(RoundedCornerShape(10.dp))
+            .background(Brush.verticalGradient(listOf(Color(0xFF0E0507), t.cloth.copy(alpha = 0.95f), Color(0xFF0E0507))))
+            .border(1.5.dp, t.gold.copy(alpha = 0.8f), RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicText("弃\n牌", style = Type.title.copy(color = t.gold.copy(alpha = 0.55f), fontSize = 18.sp, lineHeight = 1.3.em, letterSpacing = 0.em))
+    }
+}
+
+@Composable
+private fun DiscardPrompt(title: String, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    val t = LocalTable.current
+    BasicText("DISCARD ✕", style = Type.index.copy(color = t.paper, letterSpacing = 0.14.em), modifier = Modifier.background(t.red).padding(horizontal = 10.dp, vertical = 5.dp))
+    BasicText("弃掉「$title」？", style = Type.title.copy(color = t.text, fontSize = 24.sp), maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+    BasicText("这一局的所有牌都会删除，不能恢复。", style = Type.sub.copy(color = t.textSoft), modifier = Modifier.padding(top = 4.dp))
+    Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        val shape = RoundedCornerShape(999.dp)
+        BasicText("确认弃牌", style = Type.pill.copy(color = t.paper), modifier = Modifier.clip(shape).background(t.red).clickable(onClick = onConfirm).padding(horizontal = 14.dp, vertical = 6.dp))
+        BasicText("留着", style = Type.pill.copy(color = t.goldDeep), modifier = Modifier.clip(shape).border(1.dp, t.gold, shape).clickable(onClick = onCancel).padding(horizontal = 14.dp, vertical = 6.dp))
+    }
 }

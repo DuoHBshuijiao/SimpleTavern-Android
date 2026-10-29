@@ -67,6 +67,11 @@ class RackViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Discards a session and every card in it. */
+    fun deleteSession(id: String) {
+        viewModelScope.launch { runCatching { core.deleteChat(id) }.onFailure { e -> notice.value = e.readable() } }
+    }
+
     private fun shelve(characters: List<CharacterCard>, chats: List<ChatSession>): List<RackColumn> {
         val now = Instant.now()
         val byCharacter = chats.groupBy { it.characterId }
