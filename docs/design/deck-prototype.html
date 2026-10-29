@@ -1,0 +1,225 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SimpleTavern · 牌堆</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;1,500&display=swap">
+<style>
+:root{--table:radial-gradient(ellipse at 50% 38%,#eee4cb,#dccdaa 68%,#cbb98f);--tx:#2a1d14;--tx2:#7a6544;--paper:#f6eedb;--ink:#2a1d14;--gold:#c9a24b;--gold-d:#8a6a22;--red:#a3202c;--foil:linear-gradient(135deg,#8a6a22,#f1d27a 30%,#b8902f 55%,#f6e3a1 75%,#8a6a22);--serif:"Playfair Display","Songti SC","Noto Serif SC","Source Han Serif SC",Georgia,serif;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--table:radial-gradient(ellipse at 50% 38%,#3d131b,#1c0a0e 62%,#0b0506);--tx:#ecdcb8;--tx2:#a8905c}}
+:root[data-theme="dark"]{--table:radial-gradient(ellipse at 50% 38%,#3d131b,#1c0a0e 62%,#0b0506);--tx:#ecdcb8;--tx2:#a8905c}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0}
+body{background:var(--table);color:var(--tx);font-family:var(--serif);overflow:hidden;-webkit-tap-highlight-color:transparent}
+.app{--e:cubic-bezier(.2,.8,.2,1);position:relative;height:100%;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
+.app::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle,rgba(201,162,75,.16) 0 1.5px,transparent 2px) 0 0/26px 26px;-webkit-mask-image:radial-gradient(ellipse at 50% 45%,transparent 28%,#000 92%);mask-image:radial-gradient(ellipse at 50% 45%,transparent 28%,#000 92%)}
+.hd{position:relative;text-align:center;padding:12px 24px 0}
+.orn2{font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--gold-d)}
+.hd h1{margin:0;font-size:24px;font-weight:700;letter-spacing:.1em}
+.hd h1 .sub{font-weight:500;letter-spacing:.02em;margin-left:6px}
+.sub{font-style:italic;font-size:13px;color:var(--tx2)}
+.rule{display:flex;align-items:center;gap:10px;margin-top:4px;color:var(--gold);font-size:9px}
+.rule::before,.rule::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--gold))}
+.rule::after{background:linear-gradient(270deg,transparent,var(--gold))}
+.stage{position:relative;flex:1;perspective:1100px;touch-action:none;overflow:hidden}
+.dk{position:absolute;inset:0;transform-style:preserve-3d;transform:scale(var(--sc,1))}
+.cd{--cw:300px;--ch:270px;position:absolute;left:50%;top:50%;width:var(--cw);height:var(--ch);margin:calc(var(--ch)/-2) 0 0 calc(var(--cw)/-2);transform-style:preserve-3d;cursor:pointer}
+.sg{position:absolute;left:0;width:100%;transform-style:preserve-3d;transform-origin:50% 0}
+.sv{position:absolute;left:0;right:0;top:0;bottom:-.6px;overflow:hidden}
+.sv::after{content:"";position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .4s}
+.cd.up .sv::after{opacity:var(--sh,0)}
+.tr .sg{transition:transform .6s var(--e) calc(var(--i)*22ms)}
+.pg{position:absolute;left:0;width:100%;height:198%;box-sizing:border-box;border-radius:14px;border:2px solid transparent;background:linear-gradient(var(--paper),var(--paper)) padding-box,var(--foil) border-box;color:var(--ink)}
+.pg{height:270px!important;top:0}
+.pg::before{content:"";position:absolute;inset:7px;border:1px solid var(--gold);border-radius:8px;opacity:.85;pointer-events:none}
+.pg::after{content:"";position:absolute;inset:0;background:#000;opacity:var(--dm,0);border-radius:12px;pointer-events:none}
+.pg.bk{background:repeating-linear-gradient(45deg,rgba(201,162,75,.4) 0 1px,transparent 1px 9px) padding-box,repeating-linear-gradient(-45deg,rgba(201,162,75,.4) 0 1px,transparent 1px 9px) padding-box,linear-gradient(#5b1722,#5b1722) padding-box,var(--foil) border-box}
+.md{position:absolute;inset:0;display:grid;place-items:center;font-size:54px;color:var(--gold);text-shadow:0 2px 8px rgba(0,0,0,.4)}
+.cd .ff{display:none}
+.cd.up .ff{display:block}
+.cd.up .bk{display:none}
+.cd.up>.sg>.sv .bk{display:block}
+.fr{position:absolute;inset:11px;pointer-events:none;background:radial-gradient(circle at 100% 100%,transparent 9px,var(--gold) 9.5px 11px,transparent 11.5px) 0 0/22px 22px no-repeat,radial-gradient(circle at 0 100%,transparent 9px,var(--gold) 9.5px 11px,transparent 11.5px) 100% 0/22px 22px no-repeat,radial-gradient(circle at 100% 0,transparent 9px,var(--gold) 9.5px 11px,transparent 11.5px) 0 100%/22px 22px no-repeat,radial-gradient(circle at 0 0,transparent 9px,var(--gold) 9.5px 11px,transparent 11.5px) 100% 100%/22px 22px no-repeat}
+.ix{position:absolute;top:15px;left:17px;display:flex;flex-direction:column;align-items:center;font-weight:700;font-size:13px;line-height:1}
+.ix i{font-style:normal;font-size:16px;margin-top:2px}
+.ix.r{top:auto;left:auto;right:17px;bottom:15px;transform:rotate(180deg)}
+.c .ix i,.fs.c .ixl i{color:var(--red)}
+.in{position:absolute;inset:32px 36px 28px 44px;display:flex;flex-direction:column;min-height:0}
+.who{font-style:italic;font-size:13px;color:var(--gold-d);letter-spacing:.04em;margin-bottom:6px}
+.in p,.fc p{margin:0;font-size:16.5px;line-height:1.7;overflow:hidden;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;-webkit-mask-image:linear-gradient(#000 80%,transparent);mask-image:linear-gradient(#000 80%,transparent)}
+.in p::first-letter,.fc p::first-letter{float:left;font-size:2.3em;line-height:.9;padding:2px 6px 0 0;color:var(--red);font-weight:700}
+.cx{position:absolute;left:30px;right:30px;top:168px;height:66px;display:flex;flex-direction:column;gap:6px}
+.cx input{padding:7px 10px!important}
+.cx .bt button{padding:3px 10px}
+.cx input{font:inherit;font-size:16px;padding:10px 12px;border:1px solid var(--gold);background:rgba(255,255,255,.55);border-radius:8px;color:var(--ink);outline:0;min-width:0}
+.bt{display:flex;justify-content:flex-end;gap:10px}
+.bt button{all:unset;cursor:pointer;padding:6px 12px;border:1px solid var(--gold);border-radius:999px;color:var(--gold-d);font-style:italic;font-size:14px}
+#sd,#sd2{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.intro .cd{transition:transform 1s cubic-bezier(.3,1.5,.45,1) var(--dl)}
+.tr .cd{transition:transform .6s var(--e)}
+.ft{position:relative;display:flex;justify-content:space-between;align-items:center;padding:4px 24px 8px;font-style:italic;font-size:12px;color:var(--tx2)}
+.ft button{all:unset;cursor:pointer;color:var(--gold-d);padding:3px 10px;border:1px solid var(--gold);border-radius:999px}
+.tabs{position:relative;display:flex;gap:12px;padding:0 28px}
+.tabs button{all:unset;cursor:pointer;flex:1;text-align:center;padding:11px 0 9px;font-size:16px;color:var(--gold-d);border:2px solid transparent;border-bottom:0;border-radius:14px 14px 0 0;background:linear-gradient(var(--paper),var(--paper)) padding-box,var(--foil) border-box;transform:perspective(260px) rotateX(16deg);transform-origin:bottom;transition:transform .2s var(--e)}
+.tabs button:active{transform:perspective(260px) rotateX(4deg) translateY(-6px)}
+.tabs i{font-size:11px;margin-left:4px;opacity:.7}
+.fs{--ct:50%;--cr:50%;--cb:50%;--cl:50%;position:absolute;inset:0;z-index:9;visibility:hidden;background:var(--paper);color:var(--ink);clip-path:inset(var(--ct) var(--cr) var(--cb) var(--cl) round 14px);transition:clip-path .55s var(--e),visibility 0s .55s}
+.fs.on{visibility:visible;clip-path:inset(0 round 0);transition:clip-path .55s var(--e),visibility 0s}
+.fs::before{content:"";position:absolute;inset:10px;border:1.5px solid var(--gold);border-radius:12px;pointer-events:none}
+.fs .fr{inset:16px}
+.fs #fb{all:unset;cursor:pointer;position:absolute;top:34px;left:34px;font-style:italic;font-size:14px;color:var(--gold-d)}
+.ixl{position:absolute;top:34px;right:34px;font-weight:700;font-size:14px}
+.ixl i{font-style:normal;margin-left:4px}
+.fc{position:absolute;inset:92px 38px 40px;display:flex;flex-direction:column;gap:12px}
+.fc .who{font-size:15px;margin:0}
+.fc p{font-size:22px;line-height:1.95;-webkit-line-clamp:unset;display:block;-webkit-mask-image:none;mask-image:none;overflow:auto}
+.fc textarea{flex:1;width:100%;box-sizing:border-box;border:0;outline:0;resize:none;background:transparent;font:inherit;font-size:20px;line-height:1.8;color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="hd"><div class="orn2">❦ SimpleTavern ❦</div><h1>林白 <span class="sub">雨夜码头 · <span id="ps"></span></span></h1><div class="rule">◆</div></div>
+  <div class="stage" id="st"><div class="dk" id="dk"></div></div>
+  <div class="ft"><span>上下拨动 · 点正面全屏 · 点下方盖着的牌摸牌</span><button id="rp">重新取牌</button></div>
+  <div class="tabs"><button id="tm">菜单<i>menu</i></button><button id="tg2">设置<i>setting</i></button></div>
+  <div class="fs" id="fs"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+let M=[["u","我到了。你说的灯塔，在哪里？"],["c","她没有回头，只是抬手指了指雾里的一点微光。“那就是。别靠太近，潮水会骗人。”"],["u","你怎么知道？"],["c","“我在这里等过一个人。”她停了一下，“他也问过同样的问题。”"],["u","后来呢？"],["c","风忽然大了，她的声音被吹得很远。“后来灯灭了。”"],["u","灯为什么会灭？"],["c","她笑了一下，笑意没有到眼底。“因为有人答应过要回来点灯，却没有回来。”"],["u","那我现在去点。"],["c","“那你得先答应我一件事——无论看见什么，都别回头。”她终于转过身，雾在她身后合拢，像一扇慢慢关上的门。"]];
+const RE=["她看了你很久，终于点了点头。“那就走吧，趁潮水还没涨上来。”","“好。”她把灯递给你，指尖冰凉，“记住，别回头。”"];
+let n=M.length,pos=n-1,tg=pos,drag=null,moved=false,raf,fi=-1,boot=true,ac,cm=0,cards=[];
+const st=$("#st"),dk=$("#dk"),app=$("#app"),fs=$("#fs");
+const cl=(v,m)=>Math.max(0,Math.min(m,v)),el=(v,m)=>v<0?v*.3:v>m?m+(v-m)*.3:v;
+const WH=k=>k==n-1?"刚刚":(n-1-k)+" 条前",NM=m=>m=="c"?"林白":"你",SU=m=>m=="c"?"♥":"♠";
+const vib=p=>{try{navigator.vibrate&&navigator.vibrate(p)}catch(e){}};
+function flick(v=.05){try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();const L=ac.sampleRate*.05,b=ac.createBuffer(1,L,ac.sampleRate),d=b.getChannelData(0);for(let i=0;i<L;i++)d[i]=(Math.random()*2-1)*(1-i/L);const s=ac.createBufferSource(),f=ac.createBiquadFilter(),g=ac.createGain();f.type="bandpass";f.frequency.value=2500;g.gain.value=v;s.buffer=b;s.connect(f).connect(g).connect(ac.destination);s.start()}catch(e){}}
+addEventListener("pointerdown",()=>{try{ac&&ac.resume()}catch(e){}});
+// slot(d): d<0 = older (above), d>0 = newer / draw pile (below)
+// upper cards tip their TOP toward the camera, lower cards tip their BOTTOM toward it
+const SL=[[0,0,0],[1,224,52],[2,358,70],[3,420,84]];
+function slot(d){
+  const a=Math.abs(d),s=d<0?-1:1;let y,r;
+  if(a>=3){y=420+(a-3)*8;r=84}
+  else{const i=Math.floor(a),t=a-i,A=SL[i],B=SL[i+1];y=A[1]+(B[1]-A[1])*t;r=A[2]+(B[2]-A[2])*t}
+  return [s*y,s*r];
+}
+const CTRL=`<div class="cx"><input id="ci" placeholder="写下这一张牌…" autocomplete="off"><div class="bt"><button id="ex">⤢ 全屏</button><button id="sd">出牌 ♠</button></div></div>`;
+// draw card strips (px of a 270px card): far part flat in the pile · long curl · upright face · pinched lip
+const SEG=[[0,90,0,0]];
+for(let i=0;i<6;i++)SEG.push([90+i*12,12,-52/6,.04+i*.03]);
+SEG.push([162,78,0,0]);
+for(let i=0;i<3;i++)SEG.push([240+i*10,10,15,.08+i*.06]);
+function build(){
+  dk.innerHTML="";cards=[];
+  for(let k=0;k<=n+3;k++){
+    const d=document.createElement("div");d.className="cd";d.k=k;
+    const bk=`<div class="pg bk"><span class="md">❦</span></div>`;
+    if(k<n){const m=M[k];d.innerHTML=`<div class="pg ${m[0]}"><span class="fr"></span><span class="ix"><b>${k+1}</b><i>${SU(m[0])}</i></span><span class="ix r"><b>${k+1}</b><i>${SU(m[0])}</i></span><div class="in"><div class="who">${NM(m[0])} ❦ ${WH(k)}</div><p>${m[1]}</p></div></div>`}
+    else if(k==n){
+      const ff=c=>`<div class="pg ff"><span class="fr"></span><span class="ix"><b>${n+1}</b><i>♠</i></span><span class="ix r"><b>${n+1}</b><i>♠</i></span><span class="md" style="font-size:40px;align-items:start;padding-top:118px;color:var(--gold-d);opacity:.35;text-shadow:none">♠</span>${c}</div>`;
+      let html="";
+      for(let i=SEG.length-1;i>=0;i--){
+        const [st0,h,,sh]=SEG[i],top=i?SEG[i][0]-SEG[i-1][0]:0,face=i?ff(i==7?CTRL:""):"";
+        html=`<div class="sg" style="--i:${i};--sh:${sh};top:${top}px;height:${h}px"><div class="sv"><div style="position:absolute;left:0;right:0;top:${-st0}px;height:270px">${bk}${face}</div></div>${html}</div>`;
+      }
+      d.innerHTML=html;d.sg=[...d.querySelectorAll(".sg")];
+    }
+    else d.innerHTML=bk;
+    dk.appendChild(d);cards.push(d);
+  }
+}
+function lay(){
+  const f=cl(Math.round(pos),n-1);
+  cards.forEach(c=>{
+    const k=c.k;let d=k-pos,y,r,z,peek=false;
+    if(cm>0&&k<n)d-=cm==2?3:.7;           // shown text retracts upward
+    if(cm==1&&k>n)d-=.6;
+    if(k==n&&cm){y=cm==1?150:130;r=52;peek=true}  // finger pinches the near edge and curls it up toward you
+    else [y,r]=slot(d);
+    z=peek?30:-Math.min(Math.abs(d),6)*12;
+    c.style.transform=`translate3d(0,${y}px,${z}px) rotateX(${r}deg)`;
+    if(c.sg)c.sg.forEach((g,i)=>g.style.transform=peek&&SEG[i][2]?`rotateX(${SEG[i][2]}deg)`:"");
+    c.style.setProperty("--dm",(k==n&&cm)?0:Math.min(.5,Math.abs(d)*.09));
+    c.style.visibility=Math.abs(d)>7.5?"hidden":"";
+  });
+  if(f!==fi){const t=fi!==-1;fi=f;$("#ps").textContent="No."+(f+1)+" / "+n;if(t&&!boot){vib(5);flick()}}
+}
+function fit(){dk.style.setProperty("--sc",Math.min(1.15,st.clientHeight/920,st.clientWidth/330))}
+function anim(){
+  cancelAnimationFrame(raf);
+  const f=()=>{pos+=(tg-pos)*.2;if(Math.abs(tg-pos)<.002){pos=tg;lay();return}lay();raf=requestAnimationFrame(f)};
+  f();
+}
+function pull(){
+  dk.classList.remove("intro","tr");cm=0;
+  cards.forEach(c=>{c.style.transition="none";c.style.transform="translate3d(0,460px,-260px) rotateX(78deg) scale(.7)";c.style.setProperty("--dl",Math.abs(c.k-(n-1))*45+"ms")});
+  pos=tg=n-1;void dk.offsetWidth;
+  cards.forEach(c=>c.style.transition="");
+  dk.classList.add("intro");lay();
+  vib([10,30,10,30,20]);flick(.08);setTimeout(()=>flick(.06),260);
+  setTimeout(()=>dk.classList.remove("intro"),1500);
+}
+const trans=()=>{dk.classList.add("tr");setTimeout(()=>dk.classList.remove("tr"),700)};
+function openCompose(){cm=1;trans();lay();vib([10,20]);flick(.07);setTimeout(()=>cards[n].classList.add("up"),250)}
+function closeCompose(){cm=0;trans();lay();flick(.05);setTimeout(()=>cards[n]&&cards[n].classList.remove("up"),250)}
+function openEd(){
+  const txt=$("#ci").value,b=cards[n].sg[7].getBoundingClientRect(),A=app.getBoundingClientRect();
+  cm=2;trans();lay();
+  fs.className="fs";
+  fs.style.setProperty("--ct",(b.top-A.top)+"px");fs.style.setProperty("--cr",(A.right-b.right)+"px");fs.style.setProperty("--cb",(A.bottom-b.bottom)+"px");fs.style.setProperty("--cl",(b.left-A.left)+"px");
+  fs.innerHTML=`<span class="fr"></span><button id="fb">‹ 收起</button><div class="ixl">新牌<i>♠</i></div><div class="fc"><div class="who">你 ❦ 新牌</div><textarea id="ta" placeholder="写下这一张牌…"></textarea><div class="bt"><button id="sd2">出牌 ♠</button></div></div>`;
+  $("#ta").value=txt;
+  $("#fb").onclick=()=>{const v=$("#ta").value;fs.classList.remove("on");cm=1;trans();lay();$("#ci").value=v;vib(8);flick(.05)};
+  $("#sd2").onclick=()=>{const v=$("#ta").value;fs.classList.remove("on");send(v)};
+  void fs.offsetWidth;fs.classList.add("on");vib(10);flick(.08);setTimeout(()=>$("#ta")&&$("#ta").focus(),600);
+}
+function send(v){
+  v=(v||"").trim();if(!v)return;
+  cm=0;M.push(["u",v]);n=M.length;build();lay();tg=n-1;anim();vib([8,20]);flick(.08);
+  setTimeout(()=>{M.push(["c",RE[Math.floor(Math.random()*RE.length)]]);n=M.length;build();lay();tg=n-1;anim();vib(8);flick(.06)},1100);
+}
+function openFs(c){
+  const m=M[c.k],b=c.getBoundingClientRect(),A=app.getBoundingClientRect();
+  fs.className="fs "+m[0];
+  fs.style.setProperty("--ct",(b.top-A.top)+"px");fs.style.setProperty("--cr",(A.right-b.right)+"px");fs.style.setProperty("--cb",(A.bottom-b.bottom)+"px");fs.style.setProperty("--cl",(b.left-A.left)+"px");
+  fs.innerHTML=`<span class="fr"></span><button id="fb">‹ 收回牌堆</button><div class="ixl">No.${c.k+1}<i>${SU(m[0])}</i></div><div class="fc"><div class="who">${NM(m[0])} ❦ ${WH(c.k)}</div><p>${m[1]}</p></div>`;
+  $("#fb").onclick=()=>{fs.classList.remove("on");vib(8);flick(.05)};
+  void fs.offsetWidth;fs.classList.add("on");vib(10);flick(.08);
+}
+st.addEventListener("pointerdown",e=>{
+  moved=false;if(cm||e.target.closest(".cx"))return;
+  cancelAnimationFrame(raf);drag={y:e.clientY,p:pos,pt:performance.now(),pp:pos,v:0};
+});
+addEventListener("pointermove",e=>{
+  if(!drag)return;const dy=e.clientY-drag.y;
+  if(!moved&&Math.abs(dy)<8)return;moved=true;
+  pos=el(drag.p-dy/130,n-1);
+  const t=performance.now(),dt=Math.max(1,t-drag.pt);drag.v=(pos-drag.pp)/dt;drag.pp=pos;drag.pt=t;lay();
+});
+addEventListener("pointerup",()=>{
+  if(!drag)return;const d=drag;drag=null;if(!moved)return;
+  tg=cl(Math.round(pos+Math.max(-2,Math.min(2,d.v*180))),n-1);anim();
+});
+st.addEventListener("click",e=>{
+  if(moved){moved=false;return}
+  if(e.target.closest("#ex")){openEd();return}
+  if(e.target.closest("#sd")){send($("#ci").value);return}
+  if(e.target.closest("#ci"))return;
+  const c=e.target.closest(".cd");
+  if(cm==1){if(c!==cards[n])closeCompose();return}
+  if(!c||c.k>n)return;
+  if(c.k==n){if(fi==n-1)openCompose();else{tg=n-1;anim()}return}
+  if(c.k===fi)openFs(c);else{tg=c.k;anim()}
+});
+$("#rp").onclick=pull;
+["#tm","#tg2"].forEach(s=>$(s).addEventListener("click",()=>{vib(8);flick(.06)}));
+addEventListener("resize",fit);
+build();fit();pull();boot=false;
+</script>
+</body>
+</html>
+
+</body></html>
