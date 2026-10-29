@@ -1,7 +1,6 @@
 package com.simpletavern.app.ui
 
 import android.app.Application
-import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
@@ -25,7 +25,7 @@ import com.simpletavern.app.ui.deck.DeckEntrance
 import com.simpletavern.app.ui.deck.DeckScreen
 import com.simpletavern.app.ui.deck.DeckUiState
 import com.simpletavern.app.ui.deck.DotVeil
-import com.simpletavern.app.ui.deck.FullCard
+import com.simpletavern.app.ui.deck.FaceCard
 import com.simpletavern.app.ui.rack.RackCamera
 import com.simpletavern.app.ui.rack.RackColumn
 import com.simpletavern.app.ui.rack.RackGeometry
@@ -33,7 +33,9 @@ import com.simpletavern.app.ui.rack.RackScreen
 import com.simpletavern.app.ui.rack.RackSession
 import com.simpletavern.app.ui.rack.RackUiState
 import com.simpletavern.app.ui.rack.Recency
-import com.simpletavern.app.ui.table.ShuffleReveal
+import com.simpletavern.app.ui.table.CascadeReveal
+import com.simpletavern.app.ui.table.DropReveal
+import com.simpletavern.app.ui.table.Reveal
 import com.simpletavern.app.ui.theme.LocalTable
 import com.simpletavern.app.ui.theme.TavernTheme
 import com.simpletavern.app.ui.theme.Type
@@ -89,6 +91,22 @@ class ScreenshotTest {
         listOf(48L, 96L, 160L, 900L).forEach { ms ->
             compose.mainClock.advanceTimeBy(ms)
             shot("read_$ms")
+        }
+        compose.mainClock.autoAdvance = true
+    }
+
+    /** Tapping the face-down pile rolls its near edge up into the writing face. */
+    @Test
+    fun rollUpToWrite() {
+        compose.setContent {
+            Table { DeckScreen(Samples.deck, { true }, {}, { _, _, _ -> }, {}, {}, {}) }
+        }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+        compose.onRoot().performTouchInput { click(Offset(width / 2f, height * 0.79f)) }
+        listOf(16L, 32L, 32L, 80L, 150L, 150L, 400L).forEachIndexed { i, ms ->
+            compose.mainClock.advanceTimeBy(ms)
+            shot("write_$i")
         }
         compose.mainClock.autoAdvance = true
     }
@@ -157,28 +175,68 @@ class ScreenshotTest {
         }
     }
 
-    /** Settings: riffle in, square up, lift and turn the top card. */
+    @Composable
+    private fun FakeFace(title: String) {
+        FaceCard {
+            Column {
+                CardHead("‹ 收起", {}, title, Suit.Heart)
+                BasicText("❦ 模型预设", style = Type.who, modifier = Modifier.padding(32.dp))
+            }
+        }
+    }
+
+    /** Settings: a cascade from the upper packet into a pile, the top card turned up; then flipped back and dropped. */
     @Test
-    fun shuffle() {
-        val progress = Animatable(0f)
+    fun cascade() {
+        val reveal = Reveal()
         compose.setContent {
             Table {
                 RackScreen(Samples.rack, remember { RackCamera() }, { 0f }, null, {}, {}, {}, {})
-                ShuffleReveal(progress) {
-                    FullCard(background = false) {
-                        Column {
-                            CardHead("‹ 回到牌堆", {}, "设置", Suit.Heart)
-                            BasicText("❦ 牌局来源", style = Type.who, modifier = Modifier.padding(32.dp))
-                        }
-                    }
-                }
+                CascadeReveal(reveal) { FakeFace("设置") }
             }
         }
-        listOf(0.12f, 0.3f, 0.5f, 0.6f, 0.75f, 0.85f, 1f).forEach { p ->
-            compose.runOnIdle { runBlocking { progress.snapTo(p) } }
+        listOf(0.08f, 0.22f, 0.36f, 0.5f, 0.64f, 0.78f, 0.9f, 1f).forEach { o ->
+            compose.runOnIdle { runBlocking { reveal.open.snapTo(o) } }
             compose.waitForIdle()
-            shot("shuffle_${(p * 100).toInt()}")
+            shot("cascade_${(o * 100).toInt()}")
         }
+        listOf(0.2f, 0.4f, 0.6f, 0.85f).forEach { l ->
+            compose.runOnIdle { runBlocking { reveal.leave.snapTo(l) } }
+            compose.waitForIdle()
+            shot("cascade_leave_${(l * 100).toInt()}")
+        }
+    }
+
+    /** A new character: the deck drops onto the table, the camera pushes in, the top card turns over. */
+    @Test
+    fun dropDeck() {
+        val reveal = Reveal()
+        compose.setContent {
+            Table {
+                RackScreen(RackUiState(loaded = true), remember { RackCamera() }, { 0f }, null, {}, {}, {}, {})
+                DropReveal(reveal) { FakeFace("新角色") }
+            }
+        }
+        listOf(0.1f, 0.25f, 0.38f, 0.46f, 0.6f, 0.72f, 0.86f, 1f).forEach { o ->
+            compose.runOnIdle { runBlocking { reveal.open.snapTo(o) } }
+            compose.waitForIdle()
+            shot("drop_${(o * 100).toInt()}")
+        }
+    }
+
+    /** Long-pressing a session lifts it over a hidden drawer and asks before discarding. */
+    @Test
+    fun discardDrawer() {
+        val camera = RackCamera()
+        runBlocking { camera.snapTo(1, RackGeometry.TOP) }
+        var pivot = Offset.Zero
+        compose.setContent {
+            Table { RackScreen(Samples.rack, camera, { 0f }, null, {}, {}, {}, {}, onPivot = { pivot = it }) }
+        }
+        compose.waitForIdle()
+        compose.onRoot().performTouchInput { longClick(pivot) }
+        compose.waitForIdle()
+        shot("discard")
     }
 }
 
