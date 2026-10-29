@@ -35,6 +35,17 @@ internal class ProviderResolver(private val content: ContentRepository, private 
 
     suspend fun preview(chat: ChatSession, characterId: String? = null): ProviderSelection = select(chat, characterId).preview
 
+    /** A probe uses this exact preset and credentials, without cache/Fast/tools or saved conversation state. */
+    suspend fun resolveTestConnection(presetId: String): ProviderConfig {
+        val preset = content.getPreset(presetId) ?: throw StError.NotFound("model preset")
+        val at = java.time.Instant.now().toString()
+        val temporary = ChatSession("connection-test", "", overrides = ChatOverrides(presetId = presetId),
+            createdAt = at, updatedAt = at, sourceNamespace = preset.sourceNamespace)
+        val field = GenerationParameters.extras(JsonObject(GenerationParameters.normalize(parse(preset.configJson))
+            .filterKeys { it == "max_token_field" }))
+        return resolve(temporary, cacheOperation = true, useSelectedCache = false).copy(extra = field)
+    }
+
     /** Explicit directory read; no chat, generation defaults, cache selection or model is required. */
     suspend fun resolveModelListing(presetId: String): ProviderConfig {
         val preset = content.getPreset(presetId) ?: throw StError.NotFound("model preset")

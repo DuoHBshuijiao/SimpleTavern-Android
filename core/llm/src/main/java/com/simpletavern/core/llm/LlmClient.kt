@@ -201,7 +201,7 @@ class LlmClient(
             obj.obj("usage")?.let { usage = parseUsage(it, p, obj, r.extra); emit(StreamEvent.Usage(usage!!)) }
             true
         }
-        if (finish !in setOf("stop", "tool_calls")) throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}")
+        if (finish !in setOf("stop", "tool_calls")) throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}", mapOf("finishReason" to finish.orEmpty()))
         if (finish == "tool_calls" && calls.isEmpty() || finish == "stop" && calls.isNotEmpty()) {
             throw StError.Provider("inconsistent tool completion")
         }
@@ -294,7 +294,8 @@ class LlmClient(
                 }
                 "response.completed" -> {
                     val response = obj.obj("response")
-                    if (response?.text("status") != "completed") throw StError.Provider("response did not complete")
+                    if (response?.text("status") != "completed") throw StError.Provider("response did not complete",
+                        mapOf("finishReason" to response?.obj("incomplete_details")?.text("reason").orEmpty()))
                     output = response.array("output") ?: JsonArray(items.values.toList())
                     response.obj("usage")?.let {
                         val parsed = parseUsage(it, p, response, r.extra)
@@ -309,7 +310,8 @@ class LlmClient(
                     completed = true
                     return@exchange false
                 }
-                "response.failed", "response.incomplete", "error" -> throw StError.Provider("response failed or incomplete")
+                "response.failed", "response.incomplete", "error" -> throw StError.Provider("response failed or incomplete",
+                    mapOf("finishReason" to obj.obj("response")?.obj("incomplete_details")?.text("reason").orEmpty()))
             }
             checkError(obj)
             true
@@ -498,7 +500,7 @@ class LlmClient(
             true
         }
         if (!stopped || finish !in (setOf("end_turn", "stop_sequence", "tool_use") + if (r.nativeWebSearch || r.nativeWebFetch) setOf("pause_turn") else emptySet()) || closed.size != blocks.size) {
-            throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}")
+            throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}", mapOf("finishReason" to finish.orEmpty()))
         }
         val output = JsonArray(blocks.values.toList())
         if (output.toString().length > 4_194_304) throw StError.Provider("Anthropic output exceeds budget")
@@ -591,7 +593,7 @@ class LlmClient(
             }
             true
         }
-        if (finish != "STOP") throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}")
+        if (finish != "STOP") throw StError.Provider("generation incomplete: ${finish ?: "stream disconnected"}", mapOf("finishReason" to finish.orEmpty()))
         if (grounding.any { g -> !g.array("webSearchQueries").isNullOrEmpty() || !g.array("groundingChunks").isNullOrEmpty() } &&
             usage != null && "additional_tool_billing" !in usage!!.pricingWarnings) {
             usage = usage!!.copy(pricingWarnings = usage!!.pricingWarnings + "additional_tool_billing")

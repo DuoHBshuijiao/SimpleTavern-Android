@@ -28,6 +28,9 @@ interface ChatDao {
     @Query("SELECT * FROM chats ORDER BY updatedAt DESC")
     suspend fun list(): List<ChatEntity>
 
+    @Query("SELECT * FROM chats ORDER BY updatedAt DESC, id ASC")
+    fun observeList(): Flow<List<ChatEntity>>
+
     @Query("SELECT id, characterId, title, updatedAt, overridesJson, extraJson FROM chats WHERE sourceNamespace = :namespace")
     suspend fun sourceReferences(namespace: String): List<ConversationReferenceRow>
 
@@ -49,6 +52,10 @@ interface ChatDao {
 
 @Dao
 interface MessageDao {
+    @Transaction
+    @Query("SELECT * FROM message_nodes WHERE chatId = :chatId ORDER BY orderIndex DESC, id DESC LIMIT :limit OFFSET :offset")
+    fun observePage(chatId: String, limit: Int, offset: Int): Flow<List<MessageNodeWithCandidates>>
+
     @RawQuery
     suspend fun searchSourceReferences(query: SupportSQLiteQuery): List<ConversationReferenceSearchRow>
     @Query("SELECT length(CAST(content AS BLOB)) + COALESCE(length(CAST(extraJson AS BLOB)), 0) + COALESCE(length(CAST(generationMetadataJson AS BLOB)), 0) FROM message_candidates WHERE id = :id AND chatId = :chatId")
@@ -154,6 +161,9 @@ interface MessageDao {
 
 @Dao
 interface CharacterDao {
+    @Query("SELECT * FROM characters ORDER BY name ASC, id ASC")
+    fun observeList(): Flow<List<CharacterEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: CharacterEntity)
 
@@ -172,6 +182,9 @@ interface CharacterDao {
 
 @Dao
 interface PersonaDao {
+    @Query("SELECT * FROM personas ORDER BY name ASC, id ASC")
+    fun observeList(): Flow<List<PersonaEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: PersonaEntity)
 
@@ -187,6 +200,9 @@ interface PersonaDao {
 
 @Dao
 interface WorldBookDao {
+    @Query("SELECT * FROM world_books ORDER BY name ASC, id ASC")
+    fun observeList(): Flow<List<WorldBookEntity>>
+
     @Query("DELETE FROM world_books WHERE id = :id")
     suspend fun delete(id: String): Int
 
@@ -291,6 +307,12 @@ interface AttachmentDao {
 
 @Dao
 interface ConfigDao {
+    @Query("SELECT * FROM model_presets ORDER BY name ASC, id ASC")
+    fun observePresets(): Flow<List<ModelPresetEntity>>
+
+    @Query("SELECT * FROM app_settings WHERE id = 'global'")
+    fun observeSettings(): Flow<AppSettingsEntity?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAssistant(entity: AssistantEntity)
 

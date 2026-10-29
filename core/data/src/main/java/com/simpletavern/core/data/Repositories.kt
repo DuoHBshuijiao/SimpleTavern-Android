@@ -19,6 +19,15 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
 class ChatRepository(private val db: AppDatabase) {
+    fun observeSessions() = db.chats().observeList().map { rows -> rows.map(Mappers::toDomain) }
+
+    fun observeMessages(chatId: String, limit: Int = 100, offset: Int = 0): kotlinx.coroutines.flow.Flow<List<MessageNode>> {
+        if (limit !in 1..500 || offset < 0) throw StError.Validation("message page must have limit 1..500 and nonnegative offset")
+        return db.messages().observePage(chatId, limit, offset).map { rows -> rows.map { row ->
+            Mappers.toDomain(row.node, row.candidates.filter { it.chatId == row.node.chatId }.sortedBy { it.candidateIndex })
+        } }
+    }
+
     suspend fun selectedWindow(chatId: String, throughOrder: Long, limit: Int = 50): List<SelectedMessage> =
         db.messages().selectedWindow(chatId, throughOrder, limit).asReversed().map {
             SelectedMessage(it.candidate.nodeId, it.nodeOrder, Mappers.toDomain(it.candidate))
@@ -511,6 +520,14 @@ class ChatRepository(private val db: AppDatabase) {
 }
 
 class ContentRepository(private val db: AppDatabase) {
+    fun observeCharacters() = db.characters().observeList().map { rows -> rows.map(Mappers::toDomain) }
+    fun observePersonas() = db.personas().observeList().map { rows -> rows.map(Mappers::toDomain) }
+    fun observeWorldBooks() = db.worldBooks().observeList().map { rows -> rows.map(Mappers::toDomain) }
+    fun observePresets() = db.config().observePresets().map { rows -> rows.map {
+        ModelPreset(it.id, it.name, it.configJson, it.createdAt, it.updatedAt, it.sourceNamespace, it.sourceId)
+    } }
+    fun observeSettingsJson() = db.config().observeSettings().map { it?.settingsJson }
+
     val skills = SkillStore(db)
     suspend fun <T> transaction(block: suspend () -> T): T = db.withTransaction { block() }
     suspend fun listCharacters() = db.characters().list().map(Mappers::toDomain)

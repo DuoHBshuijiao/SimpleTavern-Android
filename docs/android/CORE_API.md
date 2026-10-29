@@ -265,6 +265,8 @@ implementation(project(":runtime:host"))
 
 ## 配置与内容
 
+前端基础入口已补齐：`observeCharacters/Personas/Presets/WorldBooks/Chats/Messages`、`getSettings/saveSettings/observeSettings`、`testConnection(presetId)`、`importWorldBook(Uri|File)`、`attachWorldBookToCharacter/detachWorldBookFromCharacter`。完整签名、行为与验证见 [前端基础门面接口](FRONTEND_API.md)。
+
 | 方法 | 说明 |
 |------|------|
 | `listCharacters/getCharacter/saveCharacter` | 角色 |

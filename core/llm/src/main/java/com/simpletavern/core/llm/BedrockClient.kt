@@ -241,7 +241,7 @@ internal class BedrockClient(private val http: OkHttpClient, private val json: J
     private fun index(obj: JsonObject): Int = (obj["contentBlockIndex"] as? JsonPrimitive)?.intOrNull?.takeIf { it in 0..4095 } ?: invalid()
     private fun requireFinished(reason: String?, calls: Int) {
         if (reason !in setOf("end_turn", "stop_sequence", "tool_use") || (reason == "tool_use") != (calls > 0))
-            throw StError.Provider("Bedrock generation did not complete consistently")
+            throw StError.Provider("Bedrock generation did not complete consistently", mapOf("finishReason" to reason.orEmpty()))
     }
     private fun objectValue(raw: String): JsonObject = try { json.parseToJsonElement(raw) as? JsonObject ?: invalid() }
         catch (_: IllegalArgumentException) { invalid() }

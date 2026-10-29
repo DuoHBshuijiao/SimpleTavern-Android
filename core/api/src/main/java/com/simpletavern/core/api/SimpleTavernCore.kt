@@ -95,6 +95,9 @@ class SimpleTavernCore private constructor(
 ) {
     private lateinit var initialization: Deferred<Unit>
     private val contentLibrary = ContentLibraryService(content, chats)
+    private val appSettings = AppSettingsService(content)
+    private val worldBookLibrary = WorldBookLibraryService(content)
+    private val connectionTester = ConnectionTestService(providers::resolveTestConnection, ledger = usageLedger)
     private val assistantConversations = AssistantConversationService(content, chats)
     private val providerModels = ProviderModelClient()
     private val modelCatalogRefresh = ModelCatalogRefreshClient()
@@ -206,6 +209,16 @@ class SimpleTavernCore private constructor(
     }
 
     // ---- config & content ----
+    fun observeCharacters(): Flow<List<CharacterCard>> = flow { onProcessStart(); emitAll(content.observeCharacters()) }
+    fun observePersonas(): Flow<List<UserPersona>> = flow { onProcessStart(); emitAll(content.observePersonas()) }
+    fun observePresets(): Flow<List<ModelPreset>> = flow { onProcessStart(); emitAll(content.observePresets()) }
+    fun observeWorldBooks(): Flow<List<WorldBook>> = flow { onProcessStart(); emitAll(content.observeWorldBooks()) }
+    fun observeChats(): Flow<List<ChatSession>> = flow { onProcessStart(); emitAll(chats.observeSessions()) }
+    /** Same newest-first order as pageMessages, including all candidates and current selection. */
+    fun observeMessages(chatId: String, limit: Int = 100, offset: Int = 0): Flow<List<MessageNode>> = flow {
+        onProcessStart(); emitAll(chats.observeMessages(chatId, limit, offset))
+    }
+
     suspend fun listCharacters() = content.listCharacters()
     suspend fun getCharacter(id: String) = content.getCharacter(id) ?: throw StError.NotFound(id)
     suspend fun saveCharacter(c: CharacterCard) = writeData { content.saveCharacter(c) }
@@ -295,6 +308,20 @@ class SimpleTavernCore private constructor(
     suspend fun listWorldBooks() = content.listWorldBooks()
     suspend fun getWorldBook(id: String) = content.getWorldBook(id) ?: throw StError.NotFound(id)
     suspend fun saveWorldBook(b: WorldBook) = writeData { content.saveWorldBook(b) }
+    /** Creates a new local book; does not automatically activate or attach it. */
+    suspend fun importWorldBook(source: Uri, filename: String = "世界书.json"): WorldBookImportResult {
+        onProcessStart()
+        val text = chatAttachments.readWorldBookUri(source)
+        return writeData { worldBookLibrary.importJson(text, filename) }
+    }
+    suspend fun importWorldBook(source: File): WorldBookImportResult {
+        onProcessStart()
+        return writeData { worldBookLibrary.importFile(source) }
+    }
+    suspend fun attachWorldBookToCharacter(characterId: String, worldBookId: String, expectedUpdatedAt: String): CharacterCard =
+        writeData { worldBookLibrary.attach(characterId, worldBookId, expectedUpdatedAt) }
+    suspend fun detachWorldBookFromCharacter(characterId: String, worldBookId: String, expectedUpdatedAt: String): CharacterCard =
+        writeData { worldBookLibrary.detach(characterId, worldBookId, expectedUpdatedAt) }
     suspend fun listAssistantWorkspaceFiles(assistantId: String, afterPath: String = "", limit: Int = 100) = workspace.list(assistantId, afterPath, limit)
     suspend fun listAssistantWorkspaceAssets(assistantId: String, afterPath: String = "", limit: Int = 100) = workspace.listAssets(assistantId, afterPath, limit)
     suspend fun getAssistantWorkspaceAsset(assistantId: String, path: String) = workspace.asset(assistantId, path)
@@ -333,6 +360,9 @@ class SimpleTavernCore private constructor(
     suspend fun reorderWorldBookAttachments(chatId: String, orderedIds: List<String>, expectedUpdatedAt: String) =
         writeData { contentLibrary.reorder(chatId, orderedIds, expectedUpdatedAt) }
     suspend fun getSettingsJson() = content.getSettingsJson()
+    suspend fun getSettings(): AppSettings { onProcessStart(); return appSettings.get() }
+    suspend fun saveSettings(settings: AppSettings): AppSettings = writeData { appSettings.save(settings) }
+    fun observeSettings(): Flow<AppSettings> = flow { onProcessStart(); emitAll(appSettings.observe()) }
     suspend fun saveSettingsJson(json: String) = writeData { content.saveSettingsJson(json, Instant.now().toString()) }
     suspend fun getPricingRules(): PricingSnapshot { onProcessStart(); return usageLedger.pricingRules() }
     suspend fun replacePricingRules(rules: List<PricingRule>, expected: PricingVersion) = writeData {
@@ -500,6 +530,8 @@ class SimpleTavernCore private constructor(
         content.savePreset(selected)
     }
     suspend fun getPreset(id: String) = content.getPreset(id) ?: throw StError.NotFound(id)
+    /** Explicitly sends one small model request and records its usage; cancellable, no automatic retry. */
+    suspend fun testConnection(presetId: String): ConnectionTestResult = writeData { connectionTester.test(presetId) }
     suspend fun deletePreset(id: String, expectedUpdatedAt: String) = writeData {
         content.deletePreset(id, expectedUpdatedAt)
         providerOAuth.logout(id)

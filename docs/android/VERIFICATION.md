@@ -1,5 +1,7 @@
 # 验证记录
 
+2026-10-29 前端门面增补：原回归与新增设置/连接测试/真实 Room/独立世界书用例共 50 项通过，Debug APK 构建成功。入口与测试覆盖见 [FRONTEND_API.md](FRONTEND_API.md)。本批之前的修复已经本地提交为 Android `03343ac`、Desktop `18efba9`，未推送。
+
 2026-10-29：问题报告修复后，21 项 Android JVM 回归测试与 3 项桌面备份 unittest 全部通过；`:app:assembleDebug` 构建成功。测试覆盖、命令和未验证边界见 [修复记录](ISSUE_FIXES_2026-10-29.md)。
 
 ## 2026-10-22 原生联网与订阅首轮

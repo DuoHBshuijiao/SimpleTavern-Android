@@ -92,6 +92,12 @@ internal class ChatAttachmentService(private val store: AttachmentStore, private
             output.toByteArray()
         }
     }
+    suspend fun readWorldBookUri(uri: Uri): String = withContext(Dispatchers.IO) {
+        if (uri.scheme != "content") throw StError.Validation("worldbook must be a user-authorized content URI")
+        (resolver.openInputStream(uri) ?: throw StError.NotFound("worldbook input missing")).use {
+            NativeJsonInput.read(it, com.simpletavern.core.importer.WorldBookFileDecoder.MAX_INPUT_BYTES)
+        }
+    }
     /** The draft holds the exact PNG parsed for preview; do not reopen the selected provider. */
     suspend fun importCharacterCardAvatar(bytes: ByteArray, filename: String, commit: suspend (AttachmentRef) -> Unit): AttachmentRef =
         copy(null, filename, "image/png", com.simpletavern.core.importer.SillyTavernCardDecoder.MAX_INPUT_BYTES.toLong(),

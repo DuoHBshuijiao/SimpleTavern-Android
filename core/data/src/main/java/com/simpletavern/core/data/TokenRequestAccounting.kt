@@ -51,7 +51,7 @@ class TokenUsageRequest internal constructor(private val db: AppDatabase, privat
 
 /** Shared live/native contract. Old ordinary token rows without a lifecycle stay historical. */
 object TokenRequestAccounting {
-    private val PURPOSES = setOf("tts_preprocess", "chat_generation", "memory_summary", "state_maintenance")
+    private val PURPOSES = setOf("tts_preprocess", "chat_generation", "memory_summary", "state_maintenance", "connection_test")
     data class Snapshot(val tokens: UsageTokens, val context: UsageRecordContext, val lifecycle: TokenRequestLifecycle)
     fun containsCredential(value: JsonElement, secret: String): Boolean = secret.isNotBlank() && when (value) {
         is JsonPrimitive -> value.isString && value.content.contains(secret)
@@ -113,6 +113,7 @@ object TokenRequestAccounting {
             when {
                 scope.startsWith("assistant:") -> identity(scope.removePrefix("assistant:"))
                 scope.startsWith("chat:") -> { identity(scope.removePrefix("chat:")); if (scope != "chat:${row.chatId}") invalid() }
+                context.purpose == "connection_test" && scope.startsWith("preset:") -> identity(scope.removePrefix("preset:"))
                 else -> invalid()
             }
         }
