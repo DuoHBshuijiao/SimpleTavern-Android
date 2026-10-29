@@ -1,5 +1,8 @@
 package com.simpletavern.app.ui.deck
 
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
 /**
@@ -18,6 +21,23 @@ object DeckGeometry {
      * Smaller = stronger perspective; 14 puts the camera about three and a half card widths away, as in the prototype.
      */
     const val CAMERA = 14f
+
+    /** Poker proportions, 63 × 88 mm. */
+    const val RATIO = 63f / 88f
+
+    /** Where the front card's centre sits, as a fraction of the screen height. */
+    const val FRONT_Y = 0.42f
+
+    /** Card size for a screen. It depends on the whole screen only, so the keyboard never resizes cards. */
+    fun cardSize(screenW: Dp, screenH: Dp): DpSize {
+        var w = minOf(screenW * 0.74f, 380.dp)
+        var h = w / RATIO
+        if (h > screenH * 0.5f) { h = screenH * 0.5f; w = h * RATIO }
+        return DpSize(w, h)
+    }
+
+    /** Pixel distance of a RenderNode camera set with cameraDistance = [value]: that many inches at 72 px each. */
+    fun cameraPx(value: Float): Float = value * 72f
 
     private val ys = floatArrayOf(0f, 0.83f, 1.33f, 1.56f)
     private val rs = floatArrayOf(0f, 52f, 70f, 84f)

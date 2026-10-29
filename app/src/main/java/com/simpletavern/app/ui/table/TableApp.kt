@@ -1,14 +1,8 @@
 package com.simpletavern.app.ui.table
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +20,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
@@ -35,8 +30,6 @@ import com.simpletavern.app.ui.deck.DeckEntrance
 import com.simpletavern.app.ui.deck.DeckScreen
 import com.simpletavern.app.ui.deck.DeckViewModel
 import com.simpletavern.app.ui.deck.DotVeil
-import com.simpletavern.app.ui.deck.NewGameCard
-import com.simpletavern.app.ui.deck.NewGamePage
 import com.simpletavern.app.ui.deck.Pill
 import com.simpletavern.app.ui.deck.SettingsCard
 import com.simpletavern.app.ui.deck.rememberZipPicker
@@ -54,11 +47,12 @@ import kotlinx.coroutines.launch
 
 private enum class Scene { Rack, Deck }
 
-private data class NewGameSheet(val page: NewGamePage, val characterId: String? = null)
+/** Which character card is on the table: a new one (null id) or an existing one. */
+private data class CharacterSheet(val id: String?)
 
 /**
- * The whole table: the shelf at home, a deck drawn out of it, and the cards laid over both (new game, settings).
- * Every move between them is one continuous piece of card handling rather than a page change.
+ * The whole table: the shelf at home, a deck drawn out of it, and the cards brought up over both
+ * (a character card, settings). Every move between them is one continuous piece of card handling.
  */
 @Composable
 fun TableApp() {
@@ -74,15 +68,23 @@ fun TableApp() {
     val haptic = LocalHapticFeedback.current
     val camera = remember { RackCamera() }
     val entrance = remember { DeckEntrance() }
-    val settings = remember { Animatable(0f) }
+    val settings = remember { Reveal() }
+    val characterCard = remember { Reveal() }
     var scene by remember { mutableStateOf(Scene.Rack) }
-    var sheet by remember { mutableStateOf<NewGameSheet?>(null) }
-    var settingsOpen by remember { mutableStateOf(false) }
+    var sheet by remember { mutableStateOf<CharacterSheet?>(null) }
     var pivot by remember { mutableStateOf(Offset.Unspecified) }
     var moving by remember { mutableStateOf(false) }
+    val settingsOpen by remember { derivedStateOf { settings.open.targetValue > 0f && settings.leave.targetValue < 1f } }
 
     LaunchedEffect(rack.notice) { if (rack.notice != null) { delay(4_000); rackVm.clearNotice() } }
-    LaunchedEffect(settingsOpen) { if (settingsOpen) settings.shuffleOpen() else settings.shuffleClose() }
+
+    fun openSettings() { scope.launch { settings.show(1400) } }
+    fun closeSettings() { scope.launch { settings.hide(ms = 680, backMs = 500) } }
+    fun openCharacter(id: String?) {
+        sheet = CharacterSheet(id)
+        scope.launch { characterCard.show(1700) }
+    }
+    fun closeCharacter() { scope.launch { characterCard.rewind(1000); sheet = null } }
 
     /** Pull a session out of the shelf: the plate lifts, turns over in flight and the deck fans out around it. */
     fun draw(chatId: String, title: String, index: Int, hue: Float) {
@@ -110,18 +112,6 @@ fun TableApp() {
         }
     }
 
-    /** Deal a deck straight onto the table (a session made elsewhere, e.g. the new-game card). */
-    fun deal(chatId: String) {
-        deckVm.openChat(chatId)
-        entrance.plateCenter = Offset.Unspecified
-        scope.launch {
-            entrance.flight.snapTo(1f)
-            entrance.deal.snapTo(0f)
-            scene = Scene.Deck
-            entrance.deal.animateTo(1f, spring(dampingRatio = 0.78f, stiffness = 120f))
-        }
-    }
-
     /** Gather the deck back into one card and lay it on its plate, wherever the session now sits on the shelf. */
     fun putBack() {
         if (moving) return
@@ -146,7 +136,7 @@ fun TableApp() {
         }
     }
 
-    val rackShown by remember { derivedStateOf { scene == Scene.Rack || entrance.flight.value < 1f || entrance.deal.value < 1f && entrance.plateCenter != Offset.Unspecified } }
+    val rackShown by remember { derivedStateOf { scene == Scene.Rack || entrance.flight.value < 1f || entrance.deal.value < 1f } }
 
     BackHandler(enabled = scene == Scene.Deck && !moving && sheet == null && !settingsOpen) { putBack() }
 
@@ -160,26 +150,28 @@ fun TableApp() {
                 away = { if (scene == Scene.Deck) entrance.flight.value else 0f },
                 hiddenChatId = if (scene == Scene.Deck) deck.chatId else null,
                 onOpen = { s ->
-                    val shelf = Shelf(rack.columns)
-                    val at = shelf.locate(s.id)
+                    val at = Shelf(rack.columns).locate(s.id)
                     val column = at?.let { rack.columns[it.first] }
-                    draw(s.id, s.title, (at?.second ?: 1) - RackGeometry.TOP, column?.hue ?: 0f)
+                    draw(s.id, s.title, (at?.second ?: RackGeometry.TOP) - RackGeometry.TOP, column?.hue ?: 0f)
                 },
                 onNewSession = { characterId ->
                     val hue = rack.columns.firstOrNull { it.characterId == characterId }?.hue ?: 0f
                     rackVm.newSession(
                         characterId,
                         onCreated = { id -> draw(id, "新对话", 0, hue) },
-                        onNeedsPreset = { sheet = NewGameSheet(NewGamePage.Preset, characterId) },
+                        // No connection yet: settings is where presets are made.
+                        onNeedsPreset = { openSettings() },
                     )
                 },
-                onNewCharacter = { sheet = NewGameSheet(NewGamePage.Character) },
-                onSettings = { settingsOpen = true },
+                onNewCharacter = { openCharacter(null) },
+                onSettings = { openSettings() },
                 onPivot = { pivot = it },
+                onEditCharacter = { openCharacter(it) },
+                onDelete = { rackVm.deleteSession(it) },
                 emptyExtras = {
                     val pick = rememberZipPicker(setupVm)
                     Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Pill("全新开局 ♠", { sheet = NewGameSheet(NewGamePage.Pick) }, filled = true)
+                        Pill("写一张新角色 ♥", { openCharacter(null) }, filled = true)
                         Pill(if (imp.running) "导入中…" else "导入桌面 ZIP ♣", { if (!imp.running) pick() })
                     }
                     imp.line?.let {
@@ -190,36 +182,29 @@ fun TableApp() {
         }
 
         if (scene == Scene.Deck) {
-            DeckScreen(
-                state = deck,
-                onSend = deckVm::send,
-                onStop = deckVm::stop,
-                onSwipe = deckVm::swipe,
-                onClearNotice = deckVm::clearNotice,
-                onMenu = { putBack() },
-                onSettings = { settingsOpen = true },
-                entrance = entrance,
-            )
+            Box(Modifier.fillMaxSize().graphicsLayer { alpha = 1f - characterCard.open.value.coerceIn(0f, 1f) }) {
+                DeckScreen(
+                    state = deck,
+                    onSend = deckVm::send,
+                    onStop = deckVm::stop,
+                    onSwipe = deckVm::swipe,
+                    onClearNotice = deckVm::clearNotice,
+                    onMenu = { putBack() },
+                    onSettings = { openSettings() },
+                    entrance = entrance,
+                )
+            }
         }
 
-        BackHandler(enabled = sheet != null) { sheet = null }
-        AnimatedVisibility(
-            visible = sheet != null,
-            enter = fadeIn(tween(220)) + scaleIn(tween(360), initialScale = 0.92f),
-            exit = fadeOut(tween(200)) + scaleOut(tween(240), targetScale = 0.94f),
-        ) {
-            val s = sheet ?: NewGameSheet(NewGamePage.Pick)
-            NewGameCard(
-                onClose = { sheet = null },
-                onStarted = { id -> sheet = null; deal(id) },
-                startPage = s.page,
-                initialCharacterId = s.characterId,
-            )
+        BackHandler(enabled = sheet != null) { closeCharacter() }
+        DropReveal(characterCard) {
+            val s = sheet
+            if (s != null) CharacterFace(characterId = s.id, onClose = { closeCharacter() }, onSaved = { closeCharacter() })
         }
 
-        BackHandler(enabled = settingsOpen) { settingsOpen = false }
-        ShuffleReveal(settings) {
-            SettingsCard(chatId = deck.chatId, onClose = { settingsOpen = false }, background = false)
+        BackHandler(enabled = settingsOpen) { closeSettings() }
+        CascadeReveal(settings) {
+            SettingsCard(chatId = if (scene == Scene.Deck) deck.chatId else null, onClose = { closeSettings() })
         }
     }
 }

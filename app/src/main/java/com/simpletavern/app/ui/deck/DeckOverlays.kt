@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
@@ -41,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.simpletavern.app.ui.setup.PresetDraft
+import com.simpletavern.app.ui.setup.Protocols
 import com.simpletavern.app.ui.setup.SetupViewModel
 import com.simpletavern.app.ui.card.CardFrame
 import com.simpletavern.app.ui.card.Suit
@@ -59,11 +62,16 @@ internal fun FullCard(background: Boolean = true, content: @Composable () -> Uni
             .then(if (background) Modifier.background(t.table) else Modifier)
             .clickable(remember { MutableInteractionSource() }, indication = null) {}
             .systemBarsPadding()
-            .imePadding()
             .padding(10.dp),
     ) {
         CardFrame(Modifier.fillMaxSize()) { content() }
     }
+}
+
+/** A playing card brought up to fill the stage, its page laid on the face. Taps don't fall through it. */
+@Composable
+internal fun FaceCard(content: @Composable () -> Unit) {
+    CardFrame(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, indication = null) {}) { content() }
 }
 
 @Composable
@@ -134,7 +142,7 @@ internal fun EditorCard(
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     FullCard(background = false) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().imePadding()) {
             CardHead("‹ 收起", onCollapse, "No.$rank", Suit.Spade)
             Column(Modifier.weight(1f).padding(start = 32.dp, end = 30.dp, top = 18.dp)) {
                 BasicText("你 ❦ 新牌", style = Type.who.copy(color = t.goldDeep, fontSize = 15.sp))
@@ -157,62 +165,170 @@ internal fun EditorCard(
     }
 }
 
-/** Interim settings: just enough to bring the desktop data over and give its connections a key. The shuffle reveal comes later. */
+/**
+ * The settings card: model presets (the only place connections and keys are set), which preset the open
+ * session plays on, and bringing desktop data over.
+ */
 @Composable
 internal fun SettingsCard(
     chatId: String?,
     onClose: () -> Unit,
-    background: Boolean = true,
     setup: SetupViewModel = viewModel(),
 ) {
+    val t = LocalTable.current
     val imp by setup.import.collectAsStateWithLifecycle()
-    val conn by setup.connection.collectAsStateWithLifecycle()
+    val presets by setup.presets.collectAsStateWithLifecycle()
+    val keys by setup.keyStatus.collectAsStateWithLifecycle()
+    val chat by setup.chat.collectAsStateWithLifecycle()
+    val line by setup.line.collectAsStateWithLifecycle()
+    val busy by setup.busy.collectAsStateWithLifecycle()
     val pickZip = rememberZipPicker(setup)
-    var key by remember(conn.credentialId) { mutableStateOf("") }
-    LaunchedEffect(chatId) { setup.loadConnection(chatId) }
+    var editing by remember { mutableStateOf<PresetDraft?>(null) }
+    LaunchedEffect(chatId) { setup.loadChat(chatId); setup.clearLine() }
 
-    FullCard(background) {
+    FaceCard {
         Column(Modifier.fillMaxSize()) {
-            CardHead("‹ 回到牌堆", onClose, "设置", Suit.Heart)
+            CardHead("‹ 收起", onClose, "设置", Suit.Heart)
             Column(
-                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
-                    .padding(start = 32.dp, end = 30.dp, top = 18.dp, bottom = 26.dp),
+                Modifier.weight(1f).fillMaxWidth().imePadding().verticalScroll(rememberScrollState())
+                    .padding(start = 30.dp, end = 28.dp, top = 14.dp, bottom = 26.dp),
             ) {
-                SectionTitle("牌局来源")
+                SectionTitle("模型预设")
+                Note("连接只在这里设：协议、地址、模型和 API Key。Key 加密存在本机，不会随数据迁移。")
+                presets.forEach { p ->
+                    val open = editing?.id == p.id
+                    Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                        Row(Modifier.fillMaxWidth().clickable { editing = if (open) null else setup.draftOf(p) }, verticalAlignment = Alignment.CenterVertically) {
+                            val inUse = chat.chatId != null && chat.presetId == p.id
+                            BasicText(if (inUse) "♠ " else "◇ ", style = Type.body.copy(color = if (inUse) t.red else t.goldDeep, fontSize = 15.sp))
+                            Column(Modifier.weight(1f)) {
+                                BasicText(p.name, style = Type.body.copy(color = t.ink, fontSize = 16.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val proto = Protocols.firstOrNull { it.id == p.protocol }?.label ?: p.protocol
+                                BasicText("$proto · ${p.model.ifBlank { "未设模型" }}", style = Type.sub.copy(color = t.ink.copy(alpha = 0.6f)), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            BasicText(if (keys[p.id] == true) "Key ✓" else "缺 Key", style = Type.sub.copy(color = if (keys[p.id] == true) t.goldDeep else t.red))
+                        }
+                        if (open) {
+                            PresetEditor(
+                                draft = editing!!,
+                                onDraft = { editing = it },
+                                hasKey = keys[p.id] == true,
+                                busy = busy,
+                                onSave = { setup.savePreset(it) { editing = null } },
+                                onTest = { setup.testPreset(p.id) },
+                                onDelete = { setup.deletePreset(p); editing = null },
+                                onUseHere = if (chat.chatId != null && chat.presetId != p.id) ({ setup.useForChat(p.id) }) else null,
+                            )
+                        }
+                    }
+                }
+                if (editing?.id == null && editing != null) {
+                    PresetEditor(
+                        draft = editing!!,
+                        onDraft = { editing = it },
+                        hasKey = false,
+                        busy = busy,
+                        onSave = { setup.savePreset(it) { id -> editing = null; if (chat.chatId != null && chat.presetId == null) setup.useForChat(id) } },
+                        onTest = null,
+                        onDelete = null,
+                        onUseHere = null,
+                    )
+                } else {
+                    AddRow("＋ 新建预设") { setup.clearLine(); editing = PresetDraft() }
+                }
+                line?.let { Status(it.text, it.failed) }
+
+                SectionTitle("牌局来源", Modifier.padding(top = 28.dp))
                 Note("在桌面端「设置 → 备份 → 包含全部聊天记录」导出 ZIP，传到手机上，再从这里选它。重复导入会合并，不会覆盖你在手机上改过的内容。")
                 Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Pill(if (imp.running) "导入中…" else "选择 ZIP ♣", { if (!imp.running) pickZip() }, filled = !imp.running)
                 }
                 imp.line?.let { Status(it, imp.failed) }
-
-                SectionTitle("这局的连接", Modifier.padding(top = 28.dp))
-                when {
-                    chatId == null -> Note("桌上还没有牌局，导入之后再来配。")
-                    conn.loading -> Note("读取中…")
-                    conn.credentialId == null -> Unit
-                    else -> {
-                        Field("预设", conn.presetName)
-                        Field("协议", conn.protocol)
-                        Field("模型", conn.model.ifBlank { "未设置" })
-                        Field("地址", conn.baseUrl.ifBlank { "未设置" })
-                        Field("Key", if (conn.hasKey) "已存 ✓" else "未填", warn = !conn.hasKey)
-                        Note("API Key 不随桌面数据迁移，需要在这里单独填一次。", Modifier.padding(top = 10.dp))
-                        KeyField(key, { key = it }, Modifier.padding(top = 10.dp))
-                        Row(
-                            Modifier.padding(top = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Pill("存下 Key", { setup.saveKey(key); key = "" }, filled = key.isNotBlank())
-                            Pill(if (conn.testing) "测试中…" else "测试连接", { setup.testConnection() })
-                        }
-                        Note("测试会发一次真实请求，可能产生少量费用。", Modifier.padding(top = 8.dp))
-                    }
-                }
-                conn.line?.let { Status(it, conn.failed) }
             }
         }
     }
+}
+
+@Composable
+private fun PresetEditor(
+    draft: PresetDraft,
+    onDraft: (PresetDraft) -> Unit,
+    hasKey: Boolean,
+    busy: Boolean,
+    onSave: (PresetDraft) -> Unit,
+    onTest: (() -> Unit)?,
+    onDelete: (() -> Unit)?,
+    onUseHere: (() -> Unit)?,
+) {
+    Column(Modifier.fillMaxWidth().padding(start = 14.dp, top = 6.dp)) {
+        Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Protocols.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pair.forEach { p ->
+                        Pill(p.label, {
+                            val keepBase = draft.baseUrl.isNotBlank() && Protocols.none { it.base == draft.baseUrl }
+                            onDraft(draft.copy(protocol = p.id, baseUrl = if (keepBase) draft.baseUrl else p.base))
+                        }, filled = draft.protocol == p.id)
+                    }
+                }
+            }
+        }
+        Input(draft.baseUrl, { onDraft(draft.copy(baseUrl = it)) }, "地址，如 https://api.deepseek.com", keyboard = KeyboardType.Uri)
+        Input(draft.model, { onDraft(draft.copy(model = it)) }, "模型 ID，如 deepseek-chat")
+        KeyField(draft.key, { onDraft(draft.copy(key = it)) }, Modifier.padding(top = 8.dp), if (hasKey) "已存 Key，留空则不改" else "API Key")
+        Input(draft.name, { onDraft(draft.copy(name = it)) }, "名称，可留空")
+        Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Pill(if (busy) "…" else "存下", { onSave(draft) }, filled = true)
+            if (onTest != null) Pill("测试连接", onTest)
+            if (onUseHere != null) Pill("这一局用它", onUseHere)
+            if (onDelete != null) Pill("删除", onDelete)
+        }
+        if (onTest != null) Note("测试会发一次真实请求，可能产生少量费用。")
+    }
+}
+
+@Composable
+internal fun AddRow(text: String, onClick: () -> Unit) {
+    val t = LocalTable.current
+    BasicText(
+        text,
+        style = Type.pill.copy(color = t.goldDeep),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+    )
+}
+
+@Composable
+internal fun Input(
+    value: String,
+    onValue: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier.padding(top = 8.dp),
+    lines: Int = 1,
+    keyboard: KeyboardType = KeyboardType.Text,
+    style: androidx.compose.ui.text.TextStyle? = null,
+) {
+    val t = LocalTable.current
+    val s = style ?: Type.body.copy(color = t.ink, fontSize = 15.sp)
+    BasicTextField(
+        value = value,
+        onValueChange = onValue,
+        singleLine = lines == 1,
+        minLines = lines,
+        textStyle = s,
+        cursorBrush = SolidColor(t.red),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboard),
+        modifier = modifier.fillMaxWidth(),
+        decorationBox = { inner ->
+            Box(
+                Modifier.fillMaxWidth()
+                    .border(1.dp, t.gold.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                if (value.isEmpty()) BasicText(placeholder, style = s.copy(color = t.ink.copy(alpha = 0.35f)))
+                inner()
+            }
+        },
+    )
 }
 
 /** Opens the system file picker for a desktop export and hands the pick to the importer. */
@@ -257,7 +373,7 @@ internal fun Field(label: String, value: String, warn: Boolean = false) {
 }
 
 @Composable
-internal fun KeyField(value: String, onValue: (String) -> Unit, modifier: Modifier = Modifier) {
+internal fun KeyField(value: String, onValue: (String) -> Unit, modifier: Modifier = Modifier, placeholder: String = "粘贴 API Key") {
     val t = LocalTable.current
     BasicTextField(
         value = value,
@@ -274,9 +390,24 @@ internal fun KeyField(value: String, onValue: (String) -> Unit, modifier: Modifi
                     .border(1.dp, t.gold, RoundedCornerShape(8.dp))
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
-                if (value.isEmpty()) BasicText("粘贴 API Key", style = Type.body.copy(color = t.ink.copy(alpha = 0.35f), fontSize = 15.sp))
+                if (value.isEmpty()) BasicText(placeholder, style = Type.body.copy(color = t.ink.copy(alpha = 0.35f), fontSize = 15.sp))
                 inner()
             }
         },
+    )
+}
+
+@Composable
+internal fun Pill(text: String, onClick: () -> Unit, filled: Boolean = false, modifier: Modifier = Modifier) {
+    val t = LocalTable.current
+    val shape = RoundedCornerShape(999.dp)
+    BasicText(
+        text,
+        style = Type.pill.copy(color = if (filled) t.paper else t.goldDeep),
+        modifier = modifier
+            .clip(shape)
+            .then(if (filled) Modifier.background(t.ink) else Modifier.border(1.dp, t.gold, shape))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp),
     )
 }
