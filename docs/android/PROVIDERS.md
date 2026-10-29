@@ -1,5 +1,7 @@
 # 提供商、模型与请求
 
+2026-10-29 缓存更新：OpenAI promptCache 对非官方兼容端点降为透明缓存，不发送 OpenAI 专用字段；不支持缓存的老模型也不发送这些字段。支持缓存的旧模型与 Chat 协议使用 key/retention，新版 Responses 才使用 options。无法表达的 explicit 断点降为 implicit，TTL 归一化到适配器支持值。Fast 模式及其他协议的边界沿各自适配器。下文旧批次中有关 OpenAI 缓存拒绝/不降级的描述由此替代。
+
 按主题合并原功能文档；各节日期及历史状态以 [当前状态](STATUS.md) 为准。
 
 <a id="bedrock"></a>

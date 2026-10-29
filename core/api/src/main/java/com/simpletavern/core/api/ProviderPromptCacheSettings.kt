@@ -5,7 +5,7 @@ import java.net.URI
 import java.util.Locale
 import kotlinx.serialization.json.*
 
-/** Maps source controls only. No cache lookup/create/delete, digest, automatic downgrade or replay. */
+/** Translates source cache preferences, degrading unsupported OpenAI controls to transparent caching. */
 internal object ProviderPromptCacheSettings {
     data class GeminiSettings(val ttlSeconds: Long, val historyTail: Boolean)
     data class Selection(val params: JsonObject, val gemini: GeminiSettings? = null)
@@ -30,7 +30,7 @@ internal object ProviderPromptCacheSettings {
         if (mode == "off") return Selection(JsonObject(output)) // opt-out cannot disable a vendor's transparent implicit cache.
         if (config["explicitMarkers"] == JsonPrimitive(true)) throw StError.Unsupported("provider message-level cache markers need their native adapter")
         val sourceTtl = config["ttl"]?.takeIf { it != JsonNull }
-        val ttl = if (protocol == LlmProtocol.GEMINI_GENERATE_CONTENT && sourceTtl is JsonPrimitive && !sourceTtl.isString) {
+        val ttl = if (sourceTtl is JsonPrimitive && !sourceTtl.isString) {
             sourceTtl.longOrNull?.takeIf { it in 1..604_800 }?.toString() ?: invalid()
         } else text("ttl")
         val breakpoints = config["breakpoints"]?.takeIf { it != JsonNull }?.let { value ->
@@ -40,7 +40,6 @@ internal object ProviderPromptCacheSettings {
             values
         } ?: JsonArray(listOf(JsonPrimitive("system")))
         if (mode == "best_effort") {
-            if (ttl != null) throw StError.Unsupported("best-effort caching cannot enforce a TTL")
             return Selection(JsonObject(output))
         }
         val uri = URI(baseUrl)
@@ -96,21 +95,29 @@ internal object ProviderPromptCacheSettings {
             }
             LlmProtocol.OPENAI_COMPATIBLE, LlmProtocol.OPENAI_RESPONSES -> {
                 if (!official || !(host == "api.openai.com" || host.endsWith(".openai.azure.com")))
-                    throw StError.Unsupported("source OpenAI cache controls need an OpenAI/Azure native adapter")
+                    return Selection(JsonObject(output))
                 val newStyle = Regex("^gpt-(?:5\\.(?:[6-9]|[1-9][0-9]+)|[6-9](?:[.-]|$)|[1-9][0-9]+(?:[.-]|$))", RegexOption.IGNORE_CASE)
                     .containsMatchIn(model.removePrefix("models/"))
-                if (mode == "explicit" && (!newStyle || protocol != LlmProtocol.OPENAI_RESPONSES || breakpoints != JsonArray(listOf(JsonPrimitive("system")))))
-                    throw StError.Unsupported("explicit cache currently supports a system breakpoint on newer OpenAI Responses models")
+                val supportsRetention = newStyle || Regex("^(?:gpt-(?:4o|4\\.[15]|5)(?:[.-]|$)|o[1-9](?:[.-]|$))", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(model.removePrefix("models/"))
+                if (!supportsRetention) return Selection(JsonObject(output))
+                val optionsSupported = newStyle && protocol == LlmProtocol.OPENAI_RESPONSES
+                val explicitSupported = optionsSupported && breakpoints == JsonArray(listOf(JsonPrimitive("system")))
                 val selector = text("cacheKey") ?: if (config.containsKey("cacheKey")) null else "per_chat"
                 selector?.let { output["prompt_cache_key"] = JsonPrimitive(cacheKey(it, chat, characterId)) }
-                if (newStyle) {
-                    if (ttl != null && ttl != "30m") throw StError.Unsupported("new OpenAI cache TTL must be 30m")
-                    output["prompt_cache_options"] = buildJsonObject { put("mode", mode); put("ttl", "30m") }
-                    if (mode == "explicit") output["cache_breakpoints"] = breakpoints
-                } else if (ttl != null) {
-                    if (ttl !in setOf("in_memory", "24h") || model.startsWith("gpt-5.5", true) && ttl != "24h")
-                        throw StError.Unsupported("unsupported OpenAI cache retention for the selected model")
-                    output["prompt_cache_retention"] = JsonPrimitive(ttl)
+                if (optionsSupported) {
+                    output["prompt_cache_options"] = buildJsonObject {
+                        put("mode", if (mode == "explicit" && !explicitSupported) "implicit" else mode)
+                        put("ttl", "30m")
+                    }
+                    if (mode == "explicit" && explicitSupported) output["cache_breakpoints"] = breakpoints
+                } else {
+                    val retention = when {
+                        model.startsWith("gpt-5.5", true) -> "24h"
+                        ttl == "24h" || (ttl?.toLongOrNull() ?: 0) >= 21_600 -> "24h"
+                        else -> "in_memory"
+                    }
+                    output["prompt_cache_retention"] = JsonPrimitive(retention)
                 }
             }
             else -> throw StError.Unsupported("prompt caching needs a native adapter for this protocol")

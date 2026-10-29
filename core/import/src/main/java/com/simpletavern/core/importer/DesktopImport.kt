@@ -268,7 +268,7 @@ internal class DesktopImport(
         }
         memoryText?.let { merge.longTermMemory(LongTermMemory(id, it, updatedAt = incoming.updatedAt, source = "import")) }
         val kgFile = chatDir.resolve("knowledge_graph.json")
-        if (kgFile.isFile) merge.kg(Jsonx.decode<KnowledgeGraph>(kgFile.readText()).copy(chatId = id))
+        if (kgFile.isFile) merge.kg(decodeDesktopKnowledgeGraph(kgFile.readText(), id))
         val state = obj["stateVariables"] as? JsonObject
         if (state != null) merge.mvu(MvuState(id, state.integer("version") ?: 1, state.time("updatedAt"), "import",
             Jsonx.decode(state["tables"]?.toString() ?: "[]")))

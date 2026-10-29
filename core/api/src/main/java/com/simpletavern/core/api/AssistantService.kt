@@ -59,14 +59,23 @@ internal class AssistantService(private val content: ContentRepository, private 
         if (override != null && config.sourceNamespace != session.sourceNamespace) throw StError.Conflict("assistant configuration source differs from its conversation")
         val provider = override ?: providers.resolve(providers.assistantConnection(session, config, settings))
         val (prompt, _) = assistantPrompt(config, settings)
-        val contextSize = settings.integer("context_size", 0, 1_000_000) ?: 24_000
-        val messages = contexts.buildAssistant(contextSession(session, settings), prompt, contextSize,
-            assistantMessageLimit(session, settings), throughOrder = throughOrder)
+        val contextSize = settings.integer("context_size", 0, 1_000_000) ?: 0
         val maxToolTurns = settings.integer("maxToolTurns", 1, 64) ?: 8
         val maxToolsPerTurn = settings.integer("maxToolsPerTurn", 1, 128)
         val tools = toolSession(session, binding, settings, config)
-        return AssistantGenerationPlan(provider, messages, tools,
-            maxToolTurns, maxToolsPerTurn)
+        try {
+            val messages = contexts.buildAssistant(contextSession(session, settings), prompt, contextSize,
+                assistantMessageLimit(session, settings), throughOrder = throughOrder,
+                outputTokens = com.simpletavern.core.memory.ContextTokens.output(provider),
+                toolsJson = tools.definitions.toString())
+            return AssistantGenerationPlan(provider, messages, tools,
+                maxToolTurns, maxToolsPerTurn, contextTokenBudget = contextSize)
+        } catch (error: Throwable) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                try { tools.close() } catch (closeError: Throwable) { error.addSuppressed(closeError) }
+            }
+            throw error
+        }
     }
 
     suspend fun preview(session: ChatSession): ProviderSelection {
@@ -83,9 +92,9 @@ internal class AssistantService(private val content: ContentRepository, private 
         val messageLimit = assistantMessageLimit(session, settings)
         val (prompt, hasSourceMemory) = assistantPrompt(config, settings)
         val messages = contexts.buildAssistant(contextSession(session, settings), prompt,
-            settings.integer("context_size", 0, 1_000_000) ?: 24_000, messageLimit)
-        return ContextBuildResult(messages, hasSourceMemory, emptyList(), false, false, messages.sumOf { it.content.length / 4 },
-            listOf("token_estimate_strategy=chars/4", "history_source=all_selected_messages", "context_message_limit=$messageLimit", "media_tokens_not_in_text_estimate"),
+            settings.integer("context_size", 0, 1_000_000) ?: 0, messageLimit)
+        return ContextBuildResult(messages, hasSourceMemory, emptyList(), false, false, messages.sumOf { com.simpletavern.core.memory.ContextTokens.message(it) },
+            listOf("token_estimate_strategy=${com.simpletavern.core.memory.ContextTokens.STRATEGY}", "history_source=all_selected_messages", "context_message_limit=$messageLimit", "media_tokens_conservatively_estimated"),
             "assistant=true main_chat_autoinjected=false maintenance_state_autoinjected=false")
     }
 

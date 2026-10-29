@@ -95,16 +95,33 @@ internal class GeminiCacheTaskService(private val chats: ChatRepository, private
                         use = GeminiCacheUse(provider.copy(cachePlan = null)) { lease.close() }
                         return@withLock
                     }
-                    val existing = control.withLock {
+                    val retired = control.withLock {
                         pruneBindings()
-                        // Retire stale connection/configuration bindings without deleting remote data.
+                        val cleanup = mutableListOf<String>()
                         for (id in bindings.keys.toList()) {
                             val saved = progress(id)
                             if (saved.automatic && saved.owner.chatId == owner.chatId && saved.owner.characterId == owner.characterId &&
                                 (saved.owner != owner || saved.ttlSeconds != plan.ttlSeconds || saved.historyTail != plan.historyTail ||
                                     bindings[id]?.matchesConnection(provider) != true ||
-                                    saved.automatic && bindings[id]?.matches(provider, body, files) != true)) bindings.remove(id)
+                                    bindings[id]?.matches(provider, body, files) != true)) {
+                                if (saved.owner == owner && bindings.getValue(id).matchesConnection(provider)) {
+                                    val name = bindings.getValue(id).metadata.name
+                                    cleanup += confirmations[owner to name]?.taskId ?: id
+                                } else bindings.remove(id) // Old credentials cannot authorize remote deletion.
+                            }
                         }
+                        cleanup.distinct()
+                    }
+                    // Wait for confirmed retirement before creating another billable prefix.
+                    // Failure stops this round; an uncertain DELETE is never replayed here.
+                    for (reference in retired) {
+                        val task = manage(owner.chatId, reference, GeminiCacheAction.DELETE)
+                        workers[task.id]?.join()
+                        currentCoroutineContext().ensureActive()
+                        if (tasks.get(task.id)?.status != TaskStatus.SUCCEEDED)
+                            throw StError.Provider("superseded cache could not be retired; inspect its management task before retrying")
+                    }
+                    val existing = control.withLock {
                         bindings.entries.firstOrNull { (id, binding) ->
                             val saved = progress(id)
                             saved.owner == owner && saved.automatic && saved.ttlSeconds == plan.ttlSeconds &&
@@ -153,7 +170,17 @@ internal class GeminiCacheTaskService(private val chats: ChatRepository, private
                     val key = resourceKey(owner, binding.metadata.name)
                     if (key in busy) throw StError.Conflict("a cache management operation owns this resource")
                     inUse[key] = (inUse[key] ?: 0) + 1
-                    use = GeminiCacheUse(provider.copy(cachedContext = binding, cachePlan = null)) {
+                    use = GeminiCacheUse(provider.copy(cachedContext = binding, cachePlan = null), invalidate = {
+                        control.withLock {
+                            for (boundId in bindings.keys.toList()) {
+                                val savedBinding = bindings.getValue(boundId)
+                                if (savedBinding.metadata.name == binding.metadata.name && savedBinding.matchesConnection(provider))
+                                    bindings.remove(boundId)
+                            }
+                            if (providers.selectedCache(owner.chatId, owner.characterId)?.taskId == id)
+                                providers.selectCache(owner.chatId, owner.characterId, null)
+                        }
+                    }) {
                         try { control.withLock {
                             val count = (inUse[key] ?: 1) - 1
                             if (count == 0) inUse.remove(key) else inUse[key] = count

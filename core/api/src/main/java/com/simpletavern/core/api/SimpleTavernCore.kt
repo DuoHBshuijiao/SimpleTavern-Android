@@ -42,10 +42,11 @@ import kotlinx.coroutines.NonCancellable
  * UI must call this API only — never Room tables or sandbox paths directly.
  *
  * Threading: suspend functions are main-safe; heavy IO uses Dispatchers.IO internally.
- * Streaming does not depend on UI subscribers; events are buffered per chat.
+ * Streaming does not depend on UI subscribers. Each chat replays its latest 256 events;
+ * older text is read from persisted messages. Start of a new generation clears the replay.
  */
 class SimpleTavernCore private constructor(
-    val db: AppDatabase,
+    private val db: AppDatabase,
     val paths: StoragePaths,
     val chats: ChatRepository,
     val content: ContentRepository,

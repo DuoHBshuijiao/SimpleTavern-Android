@@ -42,7 +42,7 @@ Core setWorldBookSelectionMode(chatId, mode, expectedUpdatedAt)和助手chat_wor
 
 contextMessageLimit与token预算独立。普通null/0不限制条数；助手null继承配置contextMessageLimit，显式0关闭继承。RikkaHub新导入取助手contextMessageLimit（缺字段0），不误用旧contextMessageSize。正值采用50%回落的阶梯起点，无工具时limit20在20/21/29/30条历史分别保留20/11/19/10条；台阶内起点稳定，无新持久状态。Core工具结果跟随assistant，不单独计逻辑条数；起点为带toolCalls的assistant时回到此前user，后续继续按完整call/result组装配。安全回退可能超过条数阈值。
 
-其后仍按chars/4预算保留最近完整组并重匹配世界书；context_size=0关闭估算裁剪，不能关闭显式contextMessageLimit或锚点。没有精确tokenizer、严格token硬上限或任意规模性能保证；当前全部选中历史一次读取，巨量历史分页/超长行仍待优化。只改请求，不写历史、不重放旧工具或任务。
+其后按 Unicode 保守估算保留最近完整组并重匹配世界书。context_size 留空、null 或 0 时关闭 token 裁剪，显式 contextMessageLimit 与锚点仍生效。普通锚点的 N 不含锚点本身，保留锚点之前 N 条，与桌面一致。当前全部选中历史一次读取，巨量历史分页/超长行仍待优化。只改请求，不写历史、不重放旧工具或任务。
 
 固定参考官方2.5.5提交6c903feba7e6b65f518b320a88ae29efebae77c4，标签API已确认：[助手字段](https://github.com/rikkahub/rikkahub/blob/6c903feba7e6b65f518b320a88ae29efebae77c4/app/src/main/java/me/rerere/rikkahub/data/model/Assistant.kt)、[注入集合](https://github.com/rikkahub/rikkahub/blob/6c903feba7e6b65f518b320a88ae29efebae77c4/app/src/main/java/me/rerere/rikkahub/data/ai/transformers/PromptInjectionTransformer.kt)、[生成顺序](https://github.com/rikkahub/rikkahub/blob/6c903feba7e6b65f518b320a88ae29efebae77c4/app/src/main/java/me/rerere/rikkahub/data/ai/GenerationLoop.kt)、[条数算法](https://github.com/rikkahub/rikkahub/blob/6c903feba7e6b65f518b320a88ae29efebae77c4/ai/src/main/java/me/rerere/ai/ui/Message.kt)。用户实际版本/包未验证，不从master变化推断其他版本兼容。
 
@@ -84,9 +84,9 @@ KG支持legacy（最后assistant后）、before_system/after_system（首个syst
 
 ### 长度与预览
 
-context_size（兼容contextSize）优先会话paramsJson，再成员选择的预设/会话预设顶层配置，再预设generationDefaults或其来源默认值；无值用原24000。成员影响预设选择，未添加不存在的成员context_size字段。预览不解析凭据/联网，明确缺预设仍报错。
+context_size（兼容contextSize）优先会话paramsJson，再成员选择的预设/会话预设顶层配置，再预设generationDefaults或其来源默认值；无值不按 token 裁剪，显式 null/0 也关闭。成员影响预设选择，未添加不存在的成员context_size字段。预览不解析凭据/联网，明确缺预设仍报错。
 
-0关闭估算token裁剪；已取消80/200隐藏窗口，按上述全部选中历史、显式锚点和可选条数裁剪取历史。先预留system/世界书/身份/prefill/状态/KG成本，按完整消息组保留最近历史，最后按保留历史重匹配世界书。仍使用chars/4，强制块/最新一组可超预算并记录诊断，不是精确tokenizer或严格硬上限。
+开启 token 裁剪时，预留 system/身份/prefill/状态/KG、已配置 max_tokens（Anthropic 缺省为 4096）、工具定义和媒体成本；按完整组保留最近历史，再重匹配世界书。超预算世界书整本淘汰；固定块与最新组仍无法容纳时在发请求前返回 Validation。每次工具续轮也检查合并后的工具定义和已解析媒体。估算策略为 unicode_conservative_v1：ASCII 段向上取整 /4，BMP 非 ASCII 每码点 2，补充平面每码点 4；每消息含协议开销，图片至少预留 4096，文本文件按正文或未解析字节预留。它不是模型 BPE 或实际计费用量，不能保证任意模型的精确 token 硬上限。
 
 Core buildContext(chatId, characterIdOverride=null) 可预览出场角色；独立助手继续自身上下文，不接受角色替换。公开预览的正文计算在Default dispatcher，普通生成使用同一builder。无新schema/依赖/任务、旧调用恢复或重放。
 
@@ -349,7 +349,7 @@ RikkaHub priority 默认0、injectDepth默认4、position默认after_system_prom
 
 Desktop整书与群聊system布局先装配，再执行这些位置；群聊身份约束、全局prefill和状态/KG沿原顺序处理。插入位置不会拆assistant-call/tool-result，也不插在user与带toolCalls的assistant之间。未知位置跳过并返回unsupported_worldbook_position_skipped诊断，不悄悄换到另一位置。
 
-预算仍是chars/4，先预留触发文本，再裁剪完整历史组，最后以实际保留历史重匹配。80节点窗口、纯AI转换和Core分离tool结果会影响可扫描条数；不是RikkaHub全消息结构或精确tokenizer等价。未做真实四协议位置验证。
+预算使用上述 Unicode 保守估算，先预留触发文本，再裁剪完整历史组，最后以实际保留历史重匹配，超预算时整本淘汰。纯AI转换和Core分离tool结果会影响可扫描条数；不是RikkaHub全消息结构或精确tokenizer等价。未做真实四协议位置验证。
 
 ### 编辑
 

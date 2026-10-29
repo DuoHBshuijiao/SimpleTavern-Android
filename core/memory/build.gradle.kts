@@ -14,6 +14,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation("io.pebbletemplates:pebble:4.1.1")
     implementation("com.google.re2j:re2j:1.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

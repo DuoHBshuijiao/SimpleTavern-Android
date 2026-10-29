@@ -259,7 +259,7 @@ implementation(project(":runtime:host"))
 ## 线程与取消
 
 - 对外 `suspend` 函数可从主线程调用；内部 IO 使用 `Dispatchers.IO` / Room。
-- 生成流：`observeGeneration(chatId)` 为非重放 SharedFlow；慢订阅者丢弃旧通知，不阻塞生成。消息展示以数据库为准，重新订阅应重新分页读取。
+- 生成流：`observeGeneration(chatId)` 重放当前会话最近 256 条事件，含已结束生成的 Done；新生成登记时清空旧重放。慢订阅者丢弃超出窗口的旧通知，不阻塞生成。完整正文以持久化消息为准，重新订阅仍应重新分页读取。Room 数据库不是门面的公开属性。
 - `stopTask(taskId)` 支持单聊/群聊、长期记忆总结、MVU/KG、独立 SANDBOX_SHELL/SANDBOX_FILE 和 BACKUP 导出任务。取消网络、审批/成员延迟、shell 进程组或快照 worker，并等待部分结果保存；已完成回复、正式状态、文件修改与已发布 ZIP 保留。来源导入/原生恢复尚未全接。备份长 Room 快照先发取消信号再等待 STOPPING 写事务，平台中断同样先信号取消，保留第一停止原因。
 - 进程重启：`onProcessStart()` 等待一次性恢复，非终态任务及其活动回答标为 `INTERRUPTED`，待审批失效。生成、总结、导入和备份入口先等待恢复；反复调用不会中断新任务。
 

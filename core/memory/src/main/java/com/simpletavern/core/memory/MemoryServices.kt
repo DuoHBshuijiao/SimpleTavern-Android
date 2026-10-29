@@ -228,8 +228,12 @@ class ContextBuilder(
     private val chats: ChatRepository,
     private val content: ContentRepository,
     private val memory: MemoryService,
-    private val budgetTokens: Int = 24_000,
+    private val budgetTokens: Int = 0,
 ) {
+    suspend fun contextBudgetFor(session: ChatSession, characterIdOverride: String? = null): Int =
+        resolveContextBudget(session, if (session.isGroup) session.memberSettings[characterIdOverride ?: session.characterId] else null,
+            settingsFor(session.sourceNamespace))
+
     suspend fun pureAiFor(session: ChatSession): Boolean =
         session.overrides.pureAiMode ?: ((settingsFor(session.sourceNamespace)["pureAiMode"] as? JsonPrimitive)?.booleanOrNull == true)
 
@@ -241,7 +245,7 @@ class ContextBuilder(
     }
 
     suspend fun build(session: ChatSession, characterIdOverride: String? = null,
-        throughOrder: Long = Long.MAX_VALUE): ContextBuildResult {
+        throughOrder: Long = Long.MAX_VALUE, outputTokens: Int = 0, toolsJson: String? = null): ContextBuildResult {
         val notes = mutableListOf<String>()
         val characterId = characterIdOverride ?: session.characterId
         val character = content.getCharacter(characterId)
@@ -254,6 +258,7 @@ class ContextBuilder(
         val userName = persona?.name?.takeIf { it.isNotBlank() } ?: "用户"
         fun render(text: String) = renderPlaceholders(text, charName, userName)
         val contextBudget = resolveContextBudget(session, memberSettings, settings)
+        val requestReserve = outputTokens.coerceAtLeast(0).toLong() + ContextTokens.tools(toolsJson)
         val template = messageTemplate(session)
         val messages = mutableListOf<ContextMessage>()
         var injectedMemory = false
@@ -323,7 +328,7 @@ class ContextBuilder(
 
         // World books are separate history injections, not permanently prepended role instructions.
         val startId = session.overrides.contextStartMessageId
-        val keepBefore = (session.overrides.contextStartKeepBeforeMessages ?: 0).coerceAtLeast(0)
+        val keepBefore = anchorKeepBefore(session.overrides.contextStartKeepBeforeMessages)
         val messageLimit = session.overrides.contextMessageLimit ?: 0
         if (messageLimit < 0) throw StError.Validation("context message limit must be nonnegative")
         val historyWindow = if (messageLimit > 0) chats.transaction {
@@ -428,13 +433,15 @@ class ContextBuilder(
             }
         }
 
-        // Rough char/4 token estimate; record strategy when crude
-        notes += "token_estimate_strategy=chars/4"
-        val initialBookCost = if (hasWorldBooks) {
-            injections(window.map { ContextMessage(it.role, it.content) }).sumOf { it.text.length / 4 }
-        } else 0
-        var estimate = messages.sumOf { it.content.length / 4 } + initialBookCost +
-            listOfNotNull(identityGuard, prefill, directiveState, graphText).sumOf { it.length / 4 }
+        notes += "token_estimate_strategy=${ContextTokens.STRATEGY}"
+        notes += "reserved_output_tokens=$outputTokens"
+        notes += "reserved_tool_tokens=${ContextTokens.tools(toolsJson)}"
+        val discardedBooks = mutableSetOf<String>()
+        val initialInjections = if (hasWorldBooks) injections(window.map { ContextMessage(it.role, it.content) }) else emptyList()
+        fun bookCost(blocks: List<WorldBookInjection>) = blocks.sumOf { ContextTokens.text(it.text).toLong() + 4 }
+        var initialBookCost = bookCost(initialInjections)
+        var estimate = messages.sumOf { contextCost(it).toLong() } + initialBookCost + requestReserve +
+            listOfNotNull(identityGuard, prefill, directiveState, graphText).sumOf { ContextTokens.text(it).toLong() + 4 }
         val history = ArrayDeque<ContextMessage>()
         val matchingHistory = ArrayDeque<ContextMessage>()
         for (group in historyGroups(window, notes).asReversed()) {
@@ -470,22 +477,41 @@ class ContextBuilder(
                 val named = piece.sourceSenderName?.let { name -> piece.copy(content = "[$name]: ${piece.content}") } ?: piece
                 template?.render(named) ?: named
             }
-            if (pieces.any { it.attachments.isNotEmpty() }) notes += "media_tokens_not_in_text_estimate"
-            val cost = pieces.sumOf { (it.content.length + (it.toolCallsJson?.length ?: 0) + (it.providerTurn?.contentJson?.length ?: 0)) / 4 }
+            if (pieces.any { it.attachments.isNotEmpty() }) notes += "media_tokens_conservatively_estimated"
+            val cost = pieces.sumOf { contextCost(it).toLong() }
+            // Whole books yield to the newest exchange, as on desktop.
+            if (history.isEmpty() && contextBudget > 0) {
+                for ((bookId, blocks) in initialInjections.groupBy { it.id }.entries.reversed()) {
+                    if (estimate + cost <= contextBudget) break
+                    discardedBooks += bookId
+                    val dropped = bookCost(blocks)
+                    initialBookCost -= dropped
+                    estimate -= dropped
+                    notes += "worldbook_discarded_for_budget:$bookId"
+                }
+            }
             if (contextBudget > 0 && estimate + cost > contextBudget && history.isNotEmpty()) {
                 notes += "truncated_oldest_messages_to_fit_budget"
                 // Prefer keeping system/memory already placed; drop older history only
                 break
             }
-            if (contextBudget > 0 && estimate + cost > contextBudget) notes += "newest_message_kept_despite_estimated_budget"
+            if (contextBudget > 0 && estimate + cost > contextBudget)
+                throw StError.Validation("newest exchange and fixed context exceed context_size after reserving output and tools")
             // Groups arrive newest first; prepend their pieces in reverse to preserve call/result order.
             for (piece in pieces.asReversed()) history.addFirst(piece)
             if (hasWorldBooks) for (piece in rawPieces.asReversed()) matchingHistory.addFirst(piece)
             estimate += cost
         }
         // Rematch after budget trimming: discarded old messages cannot activate books in the final prompt.
-        val finalInjections = injections(matchingHistory)
-        estimate += finalInjections.sumOf { it.text.length / 4 } - initialBookCost
+        estimate -= initialBookCost
+        val finalInjections = injections(matchingHistory).filter { it.id !in discardedBooks }
+            .groupBy { it.id }.values.flatMap { blocks ->
+                val cost = bookCost(blocks)
+                if (contextBudget > 0 && estimate + cost > contextBudget) {
+                    notes += "worldbook_discarded_for_budget:${blocks.first().id}"
+                    emptyList()
+                } else { estimate += cost; blocks }
+            }
         val positions = finalInjections.filter { it.position == null }.map { injection ->
             safeInsertionIndex(history, (history.size - injection.insertDepth).coerceAtLeast(0)) to injection
         }.groupBy({ it.first }, { it.second })
@@ -513,8 +539,9 @@ class ContextBuilder(
         }
         graphText?.let { injectedKg = injectKnowledgeGraph(messages, session.overrides, render(it))
             if (!injectedKg) notes += "knowledge_graph_anchor_missing" }
-        estimate = messages.sumOf { contextCost(it) }
-        if (contextBudget > 0 && estimate > contextBudget) notes += "estimated_context_exceeds_budget"
+        estimate = messages.sumOf { contextCost(it).toLong() } + requestReserve
+        if (contextBudget > 0 && estimate > contextBudget)
+            throw StError.Validation("fixed context exceeds context_size after reserving output and tools")
 
         val diagnostic = buildString {
             appendLine("memory=$injectedMemory mvu=$injectedMvu kg=$injectedKg")
@@ -528,7 +555,7 @@ class ContextBuilder(
             injectedWorldBookIds = worldBookIds.distinct(),
             injectedMvu = injectedMvu,
             injectedKg = injectedKg,
-            tokenEstimate = estimate,
+            tokenEstimate = (estimate - requestReserve).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             truncationNotes = notes,
             diagnosticRedacted = diagnostic,
         )
@@ -616,7 +643,12 @@ class ContextBuilder(
         val defaults = (if (preset != null) config["generationDefaults"] as? JsonObject else null)
             ?: defaultSettings["generationDefaults"] as? JsonObject ?: JsonObject(emptyMap())
         for (layer in listOf(objectJson(session.overrides.paramsJson), config, defaults)) {
-            val value = layer["context_size"]?.takeIf { it != JsonNull } ?: layer["contextSize"]?.takeIf { it != JsonNull } ?: continue
+            val value = when {
+                "context_size" in layer -> layer.getValue("context_size")
+                "contextSize" in layer -> layer.getValue("contextSize")
+                else -> continue
+            }
+            if (value == JsonNull) return 0
             return (value as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull?.takeIf { it >= 0 }
                 ?: throw StError.Validation("context_size must be a nonnegative integer")
         }
@@ -626,8 +658,7 @@ class ContextBuilder(
     fun renderPlaceholders(text: String, characterName: String, userName: String) =
         text.replace("{{char}}", characterName).replace("{{user}}", userName)
 
-    private fun contextCost(message: ContextMessage) = (message.content.length + (message.toolCallsJson?.length ?: 0) +
-        (message.providerTurn?.contentJson?.length ?: 0)) / 4
+    private fun contextCost(message: ContextMessage) = ContextTokens.message(message)
 
     /** Positional system insertions must not split the assistant-call/tool-result exchange. */
     private fun safeInsertionIndex(messages: List<ContextMessage>, requestedIndex: Int): Int {
@@ -675,7 +706,7 @@ class ContextBuilder(
     /** Assistant history is separate: never inject role prompts, main-chat history or maintenance state. */
     suspend fun buildAssistant(session: ChatSession, systemPrompt: String, tokenBudget: Int = budgetTokens,
         messageLimit: Int = session.overrides.contextMessageLimit ?: 0,
-        throughOrder: Long = Long.MAX_VALUE): List<ContextMessage> {
+        throughOrder: Long = Long.MAX_VALUE, outputTokens: Int = 0, toolsJson: String? = null): List<ContextMessage> {
         val template = messageTemplate(session)
         if (messageLimit < 0) throw StError.Validation("context message limit must be nonnegative")
         val window = if (messageLimit > 0) chats.transaction {
@@ -689,7 +720,8 @@ class ContextBuilder(
         }
         val latest = memory.projectRegexContent(session, window)
         val history = ArrayDeque<ContextMessage>()
-        var estimate = systemPrompt.length / 4
+        var estimate = contextCost(ContextMessage(ChatRole.system, systemPrompt)).toLong() +
+            outputTokens.coerceAtLeast(0) + ContextTokens.tools(toolsJson)
         for (group in historyGroups(latest, mutableListOf()).asReversed()) {
             val pieces = group.map { message -> ContextMessage(message.role, message.content,
                 toolCallId = message.toolCallId, toolCallsJson = message.toolCallsJson,
@@ -699,11 +731,14 @@ class ContextBuilder(
                         (AttachmentMimeTypes.isBinary(AttachmentMimeTypes.normalize(ref.mimeType)) || AttachmentMimeTypes.isText(AttachmentMimeTypes.normalize(ref.mimeType))) }
                     else emptyList(),
                 sourceCreatedAt = message.createdAt).let { template?.render(it) ?: it } }
-            val cost = pieces.sumOf { (it.content.length + (it.toolCallsJson?.length ?: 0) + (it.providerTurn?.contentJson?.length ?: 0)) / 4 }
+            val cost = pieces.sumOf { contextCost(it).toLong() }
             if (tokenBudget > 0 && estimate + cost > tokenBudget && history.isNotEmpty()) break
+            if (tokenBudget > 0 && estimate + cost > tokenBudget)
+                throw StError.Validation("assistant fixed context and newest exchange exceed context_size")
             for (piece in pieces.asReversed()) history.addFirst(piece)
             estimate += cost
         }
+        if (tokenBudget > 0 && estimate > tokenBudget) throw StError.Validation("assistant fixed context exceeds context_size")
         return listOf(ContextMessage(ChatRole.system, systemPrompt)) + history
     }
 

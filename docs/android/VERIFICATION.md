@@ -1,5 +1,7 @@
 # 验证记录
 
+2026-10-29：问题报告修复后，21 项 Android JVM 回归测试与 3 项桌面备份 unittest 全部通过；`:app:assembleDebug` 构建成功。测试覆盖、命令和未验证边界见 [修复记录](ISSUE_FIXES_2026-10-29.md)。
+
 ## 2026-10-22 原生联网与订阅首轮
 
 - 最终执行 `gradlew.bat :app:assembleDebug --offline --no-daemon --console=plain`，退出0，BUILD SUCCESSFUL in 25s；受影响原生 API、LLM、会话模块完成编译并打包诊断 Debug APK。

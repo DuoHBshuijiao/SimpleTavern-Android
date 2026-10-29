@@ -12,6 +12,7 @@ import com.simpletavern.core.llm.LlmFileSession
 import com.simpletavern.core.llm.LlmRequest
 import com.simpletavern.core.llm.ProviderConfig
 import com.simpletavern.core.memory.ContextBuilder
+import com.simpletavern.core.memory.ContextTokens
 import com.simpletavern.core.memory.MemoryService
 import com.simpletavern.core.model.*
 import com.simpletavern.core.tools.ToolRuntime
@@ -23,7 +24,6 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -34,7 +34,8 @@ import kotlinx.serialization.json.*
 import kotlin.random.Random
 
 data class AssistantGenerationPlan(val provider: ProviderConfig, val messages: List<ContextMessage>,
-    val tools: AssistantToolSession, val maxToolTurns: Int = 8, val maxToolsPerTurn: Int? = null)
+    val tools: AssistantToolSession, val maxToolTurns: Int = 8, val maxToolsPerTurn: Int? = null,
+    val contextTokenBudget: Int = 0)
 
 @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
 class ConversationService(
@@ -82,7 +83,7 @@ class ConversationService(
     private val events = ConcurrentHashMap<String, MutableSharedFlow<StreamEvent>>()
 
     private fun eventFlow(chatId: String) = events.getOrPut(chatId) {
-        MutableSharedFlow(extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        generationEventFlow()
     }
 
     fun observe(chatId: String): Flow<StreamEvent> =
@@ -324,6 +325,7 @@ class ConversationService(
                 try { tasks.upsert(task, progress?.let { Jsonx.encode(it) }) }
                 catch (error: Throwable) { stopSignals.forget(task.id); throw error }
                 val flow = eventFlow(chatId)
+                flow.resetReplayCache()
                 val ready = CompletableDeferred<Unit>()
                 val job = scope.launch(start = CoroutineStart.ATOMIC) {
                     runGeneration(task.id, chatId, userMessage, provider, speakers, progress?.delayMs ?: 0, flow, ready, webSearch, regeneration)
@@ -587,7 +589,8 @@ class ConversationService(
                     (spec as? JsonObject)?.get("function")?.let { (it as? JsonObject)?.get("name") } == JsonPrimitive("web_search")
                 } + WebSearchService.TOOL).toString() else configuredTools.takeIf { it.isNotEmpty() }?.toString()
                 val messages = prepareAttachments(assistantPlan?.messages ?: contextBuilder.build(session,
-                    characterIdOverride = interjectCharacterId, throughOrder = throughOrder).messages).toMutableList()
+                    characterIdOverride = interjectCharacterId, throughOrder = throughOrder,
+                    outputTokens = ContextTokens.output(provider), toolsJson = requestTools).messages).toMutableList()
                 val allowedTools = requestTools?.let { raw ->
                     Jsonx.json.parseToJsonElement(raw).jsonArray.map { spec ->
                         val obj = spec.jsonObject
@@ -597,10 +600,12 @@ class ConversationService(
                     }.toSet()
                 } ?: emptySet()
                 val maxTurns = assistantPlan?.maxToolTurns ?: 8
+                val contextTokenBudget = assistantPlan?.contextTokenBudget ?: contextBuilder.contextBudgetFor(session, interjectCharacterId)
                 val fileSession = llm.fileSession(provider)
                 activeFiles = fileSession
                 for (round in 0 until maxTurns) {
                     currentCoroutineContext().ensureActive()
+                    ContextTokens.requireFits(contextTokenBudget, messages, ContextTokens.output(provider), requestTools)
                     val requestId = if (speakerIndex == 0 && round == 0) taskId else id()
                     val assistantId = id()
                     val meta = GenerationMetadata(requestId = requestId, chatId = chatId, messageId = assistantId,

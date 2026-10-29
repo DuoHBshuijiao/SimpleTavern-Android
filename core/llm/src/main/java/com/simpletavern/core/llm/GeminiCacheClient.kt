@@ -36,8 +36,9 @@ class GeminiCacheConnection(provider: ProviderConfig) {
     override fun toString() = "GeminiCacheConnection(<redacted>)"
 }
 
-class GeminiCacheUse(val provider: ProviderConfig, private val release: suspend () -> Unit) {
+class GeminiCacheUse(val provider: ProviderConfig, private val invalidate: suspend () -> Unit = {}, private val release: suspend () -> Unit) {
     private val closed = AtomicBoolean(false)
+    suspend fun missing() = withContext(NonCancellable) { invalidate() }
     suspend fun close() { if (closed.compareAndSet(false, true)) withContext(NonCancellable) { release() } }
     override fun toString() = "GeminiCacheUse(<redacted>)"
 }
@@ -279,7 +280,9 @@ class GeminiCacheClient(http: OkHttpClient = OkHttpClient.Builder()
                 currentCoroutineContext().ensureActive()
                 call.execute().use { response ->
                     currentCoroutineContext().ensureActive()
-                    if (!response.isSuccessful) throw StError.Provider("Gemini cache HTTP ${response.code}")
+                    // An absent resource is already in the requested final state for DELETE.
+                    if (method == "DELETE" && response.code == 404) return@use JsonObject(emptyMap())
+                    if (!response.isSuccessful) throw StError.Provider("Gemini cache HTTP ${response.code}", mapOf("httpStatus" to response.code.toString()))
                     val source = response.body?.source() ?: throw StError.Provider("empty Gemini cache response")
                     if (source.request(262_145) && source.buffer.size > 262_144) throw StError.Provider("Gemini cache response exceeds budget")
                     val bytes = source.readByteArray()

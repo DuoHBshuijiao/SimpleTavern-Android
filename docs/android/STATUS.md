@@ -1,5 +1,7 @@
 # 当前状态
 
+2026-10-29：问题报告中的 KG 导入、Unicode token 预算与输出/工具/媒体预留、桌面锚点对齐、未配置上下文不裁剪、整本世界书预算淘汰、Gemini 404 绑定失效及旧前缀删除、OpenAI 缓存降级、流式重放和 Compose 插件声明已修正。范围与验证见 [问题修复记录](ISSUE_FIXES_2026-10-29.md)。
+
 2026-10-22 增补：两端原生联网与订阅首轮实现已落地，Android Debug 构建通过。新增官方 ChatGPT SIWC、Grok 设备码兼容，以及 DeepSeek/Claude 抓取与 GPT 联动网页能力。接口见 [CORE_API.md](CORE_API.md)，剩余项见 [NATIVE_WEB_SUBSCRIPTION_PLAN.md](NATIVE_WEB_SUBSCRIPTION_PLAN.md)。额度数字查询尚未完成，返回 unsupported 和管理链接；真实账号/浏览器回调/联网调用未验收，完整产品前端仍待开发。下文为此前基线。
 
 更新：2026-10-11。业务核心与诊断宿主已有离线 Debug/Release 构建证据；产品前端及完整设备验收尚未完成。
@@ -33,6 +35,6 @@
 - 未限制消息数的上下文仍可能读取全历史；context_size=0 不做估算裁剪。
 - 原生回溯正则没有匹配硬超时；输出预算、合作式取消与编译复用不能消除长时间回溯风险。
 - 长历史/内存/性能数值未采样；内置运行库的完整分发来源审计见第三方说明。
-- 原桌面助手工作区文件迁移延期；新助手工作区接口已有实现。产品 UI 留待后续开发。
+- 桌面助手工作区与用量已能导入，桌面完整备份已包含相应文件；真实数据验收仍待完成。产品 UI 留待后续开发。
 
 接口见 [CORE_API](CORE_API.md)，数据约束见 [DATA_MODEL](DATA_MODEL.md)，运行核对见 [ACCEPTANCE](ACCEPTANCE.md)，构建证据见 [VERIFICATION](VERIFICATION.md)。旧批次进度、团队任务书及修改前审查不再作为当前待办。

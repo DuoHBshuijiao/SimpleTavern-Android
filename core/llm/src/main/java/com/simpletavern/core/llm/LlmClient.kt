@@ -545,6 +545,9 @@ class LlmClient(
             val active = use?.provider ?: p
             val payload = active.cachedContext?.apply(active, body, files) ?: body
             geminiPayload(active, r, payload, url, beforeExecute)
+        } catch (error: StError.Provider) {
+            if (error.details["httpStatus"] == "404") use?.missing()
+            throw error // No generation replay: the next explicit round can bind a fresh cache.
         } finally { use?.close() }
     }
 
@@ -662,7 +665,7 @@ class LlmClient(
             call.execute().use { response ->
                 currentCoroutineContext().ensureActive()
                 // Do not echo arbitrary upstream bodies: they can contain credentials or request data.
-                if (!response.isSuccessful) throw StError.Provider("provider HTTP ${response.code}")
+                if (!response.isSuccessful) throw StError.Provider("provider HTTP ${response.code}", mapOf("httpStatus" to response.code.toString()))
                 val source = response.body?.source() ?: throw StError.Provider("empty response body")
                 if (p.streaming && p.bedrockBackend) AwsEventStream.read(source) { event ->
                     if (event.headers[":event-type"] != "chunk") throw StError.Unsupported("unsupported Bedrock InvokeModel stream event")
